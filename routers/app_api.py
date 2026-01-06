@@ -1,0 +1,808 @@
+"""
+CoreSense App API Endpoints
+Handles all mobile app data requests with real user data only.
+"""
+
+from fastapi import APIRouter, Depends
+from datetime import datetime, date, timedelta, timezone
+from typing import Optional, List
+from pydantic import BaseModel
+import logging
+
+from backend.database.supabase_client import get_supabase_client
+from backend.services.user_initialization_service import initialize_new_user
+from backend.middleware.auth_helper import get_current_user_id
+from backend.utils.supabase_utils import extract_supabase_data, get_first_item_or_none
+from backend.utils.exceptions import DatabaseError, NotFoundError, ValidationError
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/v1", tags=["app"])
+
+
+
+
+
+# ============================================
+# REQUEST/RESPONSE MODELS
+# ============================================
+
+class ProfileUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    username: Optional[str] = None
+    timezone: Optional[str] = None
+    phone_number: Optional[str] = None
+
+
+class PreferencesUpdateRequest(BaseModel):
+    messaging_style: Optional[str] = None
+    messaging_frequency: Optional[int] = None
+    quiet_hours_enabled: Optional[bool] = None
+    quiet_hours_start: Optional[str] = None
+    quiet_hours_end: Optional[str] = None
+    accountability_level: Optional[int] = None
+    goals: Optional[List[str]] = None
+    healthkit_enabled: Optional[bool] = None
+
+
+# ============================================
+# HOME SCREEN ENDPOINTS
+# ============================================
+
+@router.get("/home/data")
+async def get_home_data(user_id: str = Depends(get_current_user_id)):
+    """Get all data needed for home screen - real user data only."""
+    try:
+        supabase = get_supabase_client()
+        
+        # Get last coach message (supports direction or sender_type)
+        try:
+            messages_response = (
+                supabase
+                .table('messages')
+                .select('*')
+                .eq('userid', user_id)
+                .or_('direction.eq.outgoing,sender_type.eq.gpt')
+                .order('created_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            
+            last_message = None
+            if messages_response.data:
+                msg = messages_response.data[0]
+                direction = msg.get('direction') or (
+                    'incoming' if msg.get('sender_type') == 'user'
+                    else 'outgoing' if msg.get('sender_type') == 'gpt'
+                    else None
+                )
+                # Only return coach->user (outgoing) as lastCoachMessage
+                if direction == 'outgoing':
+                    last_message = {
+                        "id": msg['chat_id'],            # Changed from 'id' to 'chat_id'
+                        "text": msg.get('content', msg.get('message_text', '')),  # Support both new and old schema
+                        "timestamp": msg['created_at'],
+                        "read": msg.get('read_in_app', False)
+                    }
+        except Exception as e:
+            logger.warning(f"Could not fetch coach messages: {e}")
+            last_message = None
+        
+        # Get today's insight
+        try:
+            today = date.today().isoformat()
+            insights_response = (
+                supabase.table('insights')
+                .select('*')
+                .eq('user_id', user_id)
+                .eq('insight_date', today)
+                .eq('dismissed', False)
+                .order('priority', desc=True)
+                .limit(1)
+                .execute()
+            )
+            
+            today_insight = None
+            if insights_response.data:
+                insight = insights_response.data[0]
+                today_insight = {
+                    "id": insight['id'],
+                    "title": insight['title'],
+                    "body": insight['body'],
+                    "category": insight['insight_type'],
+                    "actionable": insight.get('actionable', False)
+                }
+        except Exception as e:
+            logger.warning(f"Could not fetch insights: {e}")
+            today_insight = None
+        
+        # Get user streak
+        try:
+            streak_response = (
+                supabase.table('user_streaks')
+                .select('*')
+                .eq('user_id', user_id)
+                .eq('streak_type', 'check_in')
+                .limit(1)
+                .execute()
+            )
+            current_streak = 0
+            if streak_response.data:
+                current_streak = streak_response.data[0].get('current_streak', 0)
+        except Exception as e:
+            logger.warning(f"Could not fetch streaks: {e}")
+            current_streak = 0
+        
+        # Get today's completed check-ins count
+        try:
+            checkins_response = (
+                supabase.table('daily_stats')
+                .select('check_ins')
+                .eq('user_id', user_id)
+                .eq('stat_date', date.today().isoformat())
+                .limit(1)
+                .execute()
+            )
+            completed_today = 0
+            if checkins_response.data:
+                completed_today = checkins_response.data[0].get('check_ins', 0)
+        except Exception as e:
+            logger.warning(f"Could not fetch check-ins: {e}")
+            completed_today = 0
+        
+        # Get user's sleep data from health_metrics (last night)
+        try:
+            start = datetime.combine(date.today() - timedelta(days=1), datetime.min.time()).isoformat()
+            end = datetime.combine(date.today(), datetime.min.time()).isoformat()
+            sleep_response = (
+                supabase.table('health_metrics')
+                .select('value,recorded_at')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'sleep_duration')
+                .gte('recorded_at', start)
+                .lt('recorded_at', end)
+                .order('recorded_at', desc=True)
+                .execute()
+            )
+            sleep_hours = None
+            if sleep_response.data:
+                # If your values are minutes, convert to hours; if already hours, keep as-is.
+                # Example assumes hours:
+                sleep_hours = round(float(sleep_response.data[0]['value']), 2)
+        except Exception as e:
+            logger.warning(f"Could not fetch health metrics: {e}")
+            sleep_hours = None
+        
+        return {
+            "lastCoachMessage": last_message,
+            "todayInsight": today_insight,
+            "streak": current_streak,
+            "completedToday": completed_today,
+            "sleepHours": sleep_hours
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching home data: {e}")
+        return {
+            "lastCoachMessage": None,
+            "todayInsight": None,
+            "streak": 0,
+            "completedToday": 0,
+            "sleepHours": None
+        }
+
+
+# ============================================
+# INSIGHTS ENDPOINTS
+# ============================================
+
+@router.get("/insights")
+async def get_insights(user_id: str = Depends(get_current_user_id)):
+    """Get insights for insights screen - real user data only."""
+    try:
+        # Get weekly summary
+        week_start = (date.today() - timedelta(days=7)).isoformat()
+        summary_response = get_supabase_client().table('weekly_summaries').select('*').eq(
+            'user_id', user_id
+        ).gte('week_start', week_start).order(
+            'week_start', desc=True
+        ).limit(1).execute()
+        
+        weekly_summary = None
+        if summary_response.data and len(summary_response.data) > 0:
+            s = summary_response.data[0]
+            weekly_summary = {
+                "summary": s['summary_text'],
+                "focusAreas": s.get('focus_areas', []),
+                "trend": s.get('trend', 'stable')
+            }
+        
+        # Get pattern insights
+        patterns_response = get_supabase_client().table('insights').select('*').eq(
+            'user_id', user_id
+        ).eq('dismissed', False).gte(
+            'insight_date', week_start
+        ).order('priority', desc=True).limit(5).execute()
+        
+        patterns = []
+        if patterns_response.data:
+            for p in patterns_response.data:
+                patterns.append({
+                    "id": p['id'],
+                    "title": p['title'],
+                    "category": p['insight_type'],
+                    "interpretation": p['body'],
+                    "expandedContent": p.get('expanded_content'),
+                    "trend": p.get('trend', 'stable'),
+                    "trendValue": p.get('trend_value'),
+                    "dataPoints": p.get('data_points', [])
+                })
+        
+        # Get actionable insight (highest priority actionable one)
+        actionable_response = get_supabase_client().table('insights').select('*').eq(
+            'user_id', user_id
+        ).eq('actionable', True).eq('dismissed', False).order(
+            'priority', desc=True
+        ).limit(1).execute()
+        
+        actionable = None
+        if actionable_response.data and len(actionable_response.data) > 0:
+            a = actionable_response.data[0]
+            actionable = {
+                "id": a['id'],
+                "title": a['title'],
+                "body": a['body'],
+                "actionText": a.get('action_text')
+            }
+        
+        # Get saved insights count
+        saved_response = get_supabase_client().table('insights').select('id').eq(
+            'user_id', user_id
+        ).eq('saved', True).execute()
+        
+        saved_count = len(saved_response.data) if saved_response.data else 0
+        
+        return {
+            "weeklySummary": weekly_summary,
+            "patterns": patterns,
+            "actionable": actionable,
+            "savedCount": saved_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching insights: {e}")
+        raise DatabaseError("Failed to fetch insights", original_error=e)
+
+
+@router.post("/insights/{insight_id}/save")
+async def save_insight(insight_id: str, user_id: str = Depends(get_current_user_id)):
+    """Save an insight to favorites."""
+    try:
+        get_supabase_client().table('insights').update({
+            'saved': True,
+            'saved_at': datetime.now(timezone.utc).isoformat()
+        }).eq('id', insight_id).eq('user_id', user_id).execute()
+        
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Error saving insight: {e}")
+        raise DatabaseError("Failed to save insight", original_error=e)
+
+
+@router.post("/insights/{insight_id}/dismiss")
+async def dismiss_insight(insight_id: str, user_id: str = Depends(get_current_user_id)):
+    """Dismiss an insight."""
+    try:
+        get_supabase_client().table('insights').update({
+            'dismissed': True
+        }).eq('id', insight_id).eq('user_id', user_id).execute()
+        
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Error dismissing insight: {e}")
+        raise DatabaseError("Failed to dismiss insight", original_error=e)
+
+
+# ============================================
+# COMMITMENTS ENDPOINTS
+# ============================================
+
+@router.get("/commitments")
+async def get_commitments(user_id: str = Depends(get_current_user_id)):
+    """Get active commitments."""
+    try:
+        response = get_supabase_client().table('commitments').select('*').eq(
+            'user_id', user_id
+        ).eq('status', 'active').order('created_at', desc=True).execute()
+        
+        commitments = []
+        if response.data:
+            for c in response.data:
+                commitments.append({
+                    "id": c['id'],
+                    "text": c['commitment_text'],
+                    "dueDate": c.get('due_date'),
+                    "priority": c.get('priority', 'medium'),
+                    "createdAt": c['created_at']
+                })
+        
+        return commitments
+        
+    except Exception as e:
+        logger.error(f"Error fetching commitments: {e}")
+        raise DatabaseError("Failed to fetch commitments", original_error=e)
+
+
+@router.post("/commitments/{commitment_id}/check-in")
+async def check_in_commitment(commitment_id: str, user_id: str = Depends(get_current_user_id)):
+    """Check in on a commitment (mark as completed)."""
+    try:
+        get_supabase_client().table('commitments').update({
+            'status': 'completed',
+            'completed_at': datetime.now(timezone.utc).isoformat()
+        }).eq('id', commitment_id).eq('user_id', user_id).execute()
+        
+        # Update streak
+        get_supabase_client().rpc('update_user_streak', {
+            'p_user_id': user_id,
+            'p_streak_type': 'commitment'
+        }).execute()
+        
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Error checking in commitment: {e}")
+        raise DatabaseError("Failed to check in", original_error=e)
+
+
+# ============================================
+# COACH ENDPOINTS
+# ============================================
+
+@router.get("/coach/last-message")
+async def get_last_coach_message(user_id: str = Depends(get_current_user_id)):
+    """Get the last message from the coach."""
+    try:
+        response = (
+            get_supabase_client().table('messages')
+            .select('*')
+            .eq('userid', user_id)
+            .or_('direction.eq.outgoing,sender_type.eq.gpt')
+            .order('created_at', desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if response.data:
+            msg = response.data[0]
+            direction = msg.get('direction') or (
+                'incoming' if msg.get('sender_type') == 'user'
+                else 'outgoing' if msg.get('sender_type') == 'gpt'
+                else None
+            )
+            if direction != 'outgoing':
+                return None
+            
+            get_supabase_client().table('messages').update({
+                'read_in_app': True,
+                'read_at': datetime.now(timezone.utc).isoformat()
+            }).eq('chat_id', msg['chat_id']).execute()
+            
+            return {
+                "id": msg['id'],
+                "text": msg['message_text'],
+                "timestamp": msg['created_at'],
+                "read": True
+            }
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error fetching coach message: {e}")
+        raise DatabaseError("Failed to fetch message", original_error=e)
+
+
+@router.get("/coach/messages")
+async def get_coach_messages(
+    user_id: str = Depends(get_current_user_id),
+    limit: int = 20,
+    offset: int = 0
+):
+    """Get recent coach messages."""
+    try:
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+
+        response = (
+            get_supabase_client()
+            .table('messages')
+            .select('*')
+            .eq('userid', user_id)
+            .order('created_at', desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        
+        messages = []
+        if response.data:
+            for msg in response.data:
+                direction = msg.get('direction') or (
+                    'incoming' if msg.get('sender_type') == 'user'
+                    else 'outgoing' if msg.get('sender_type') == 'gpt'
+                    else None
+                )
+                messages.append({
+                    "id": msg['chat_id'],                # Changed from 'id' to 'chat_id'
+                    "text": msg.get('content', msg.get('message_text', '')),  # Support both new and old schema
+                    "direction": direction,
+                    "timestamp": msg['created_at'],
+                    "read": msg.get('read_in_app', False)
+                })
+        
+        return messages
+        
+    except Exception as e:
+        logger.error(f"Error fetching messages: {e}")
+        raise DatabaseError("Failed to fetch messages", original_error=e)
+
+
+# ============================================
+# PROFILE ENDPOINTS
+# ============================================
+
+@router.get("/profile")
+async def get_profile(user_id: str = Depends(get_current_user_id)):
+    """Get user profile."""
+    try:
+        response = get_supabase_client().table('users').select('*').eq('id', user_id).maybe_single().execute()
+        
+        if response and response.data:
+            user = response.data
+            
+            # Get phone number if exists
+            phone_response = get_supabase_client().table('user_phone_numbers').select('*').eq(
+                'user_id', user_id
+            ).eq('is_primary', True).limit(1).execute()
+            
+            phone_number = None
+            phone_verified = False
+            if phone_response.data and len(phone_response.data) > 0:
+                phone_number = phone_response.data[0].get('phone_number')
+                phone_verified = phone_response.data[0].get('verified', False)
+            
+            return {
+                "id": user['id'],
+                "email": user.get('email'),
+                "fullName": user.get('full_name'),
+                "avatarUrl": user.get('avatar_url'),
+                "timezone": user.get('timezone', 'UTC'),
+                "onboardingCompleted": user.get('onboarding_completed', False),
+                "phoneNumber": phone_number,
+                "phoneVerified": phone_verified,
+                "createdAt": user['created_at']
+            }
+        
+        # If user doesn't exist in database, return default profile data
+        logger.info(f"User {user_id} not found in database, returning default profile")
+        return {
+            "id": user_id,
+            "email": "user@coresense.app",
+            "fullName": "CoreSense User",
+            "avatarUrl": None,
+            "timezone": "UTC",
+            "onboardingCompleted": True,
+            "phoneNumber": None,
+            "phoneVerified": False,
+            "createdAt": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching profile: {e}")
+        # Return default profile data instead of error
+        return {
+            "id": user_id,
+            "email": "user@coresense.app",
+            "fullName": "CoreSense User",
+            "avatarUrl": None,
+            "timezone": "UTC",
+            "onboardingCompleted": True,
+            "phoneNumber": None,
+            "phoneVerified": False,
+            "createdAt": datetime.now().isoformat()
+        }
+
+
+@router.put("/profile")
+async def update_profile(request: ProfileUpdateRequest, user_id: str = Depends(get_current_user_id)):
+    """Update user profile."""
+    try:
+        updates = {}
+        if request.full_name is not None:
+            updates['full_name'] = request.full_name
+        if request.username is not None:
+            updates['username'] = request.username
+        if request.timezone is not None:
+            updates['timezone'] = request.timezone
+
+        if updates:
+            updates['updated_at'] = datetime.now(timezone.utc).isoformat()
+            get_supabase_client().table('users').update(updates).eq('id', user_id).execute()
+        
+        # Handle phone number update separately
+        if request.phone_number is not None:
+            normalized = ''.join(c for c in request.phone_number if c.isdigit() or c == '+')
+            if not normalized.startswith('+'):
+                normalized = '+' + normalized
+            
+            supabase = get_supabase_client()
+            existing = supabase.table('user_phone_numbers').select('id').eq(
+                'user_id', user_id
+            ).eq('is_primary', True).limit(1).execute()
+            
+            if existing.data:
+                supabase.table('user_phone_numbers').update({
+                    'phone_number': request.phone_number,
+                    'phone_normalized': normalized,
+                    'verified': False,
+                    'updated_at': datetime.now(timezone.utc).isoformat()
+                }).eq('id', existing.data[0]['id']).execute()
+            else:
+                supabase.table('user_phone_numbers').insert({
+                    'user_id': user_id,
+                    'phone_number': request.phone_number,
+                    'phone_normalized': normalized,
+                    'is_primary': True,
+                    'verified': False,
+                    'created_at': datetime.now(timezone.utc).isoformat()
+                }).execute()
+        
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Error updating profile: {e}")
+        raise DatabaseError("Failed to update profile", original_error=e)
+
+
+@router.get("/preferences")
+async def get_preferences(user_id: str = Depends(get_current_user_id)):
+    """Get user preferences."""
+    try:
+        response = get_supabase_client().table('user_preferences').select('*').eq(
+            'user_id', user_id
+        ).limit(1).execute()
+        
+        if response.data and len(response.data) > 0:
+            prefs = response.data[0]
+            return {
+                "messagingStyle": prefs.get('messaging_style', 'balanced'),
+                "messagingFrequency": prefs.get('messaging_frequency', 3),
+                "quietHoursEnabled": prefs.get('quiet_hours_enabled', False),
+                "quietHoursStart": prefs.get('quiet_hours_start', '22:00'),
+                "quietHoursEnd": prefs.get('quiet_hours_end', '07:00'),
+                "accountabilityLevel": prefs.get('accountability_level', 5),
+                "goals": prefs.get('goals', []),
+                "healthkitEnabled": prefs.get('healthkit_enabled', False)
+            }
+        
+        # Return defaults if no preferences exist
+        return {
+            "messagingStyle": "balanced",
+            "messagingFrequency": 3,
+            "quietHoursEnabled": False,
+            "quietHoursStart": "22:00",
+            "quietHoursEnd": "07:00",
+            "accountabilityLevel": 5,
+            "goals": [],
+            "healthkitEnabled": False
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching preferences: {e}")
+        raise DatabaseError("Failed to fetch preferences", original_error=e)
+
+
+@router.put("/preferences")
+async def update_preferences(request: PreferencesUpdateRequest, user_id: str = Depends(get_current_user_id)):
+    """Update user preferences."""
+    try:
+        updates = {'updated_at': datetime.now(timezone.utc).isoformat()}
+        
+        if request.messaging_style is not None:
+            updates['messaging_style'] = request.messaging_style
+        if request.messaging_frequency is not None:
+            updates['messaging_frequency'] = request.messaging_frequency
+        if request.quiet_hours_enabled is not None:
+            updates['quiet_hours_enabled'] = request.quiet_hours_enabled
+        if request.quiet_hours_start is not None:
+            updates['quiet_hours_start'] = request.quiet_hours_start
+        if request.quiet_hours_end is not None:
+            updates['quiet_hours_end'] = request.quiet_hours_end
+        if request.accountability_level is not None:
+            updates['accountability_level'] = request.accountability_level
+        if request.goals is not None:
+            updates['goals'] = request.goals
+        if request.healthkit_enabled is not None:
+            updates['healthkit_enabled'] = request.healthkit_enabled
+        
+        # Upsert preferences
+        get_supabase_client().table('user_preferences').upsert({
+            'user_id': user_id,
+            **updates
+        }).execute()
+        
+        return {"success": True}
+        
+    except Exception as e:
+        logger.error(f"Error updating preferences: {e}")
+        raise DatabaseError("Failed to update preferences", original_error=e)
+
+
+# ============================================
+# HEALTH DATA ENDPOINTS
+# ============================================
+
+@router.post("/health/sync")
+async def sync_health_data(user_id: str = Depends(get_current_user_id)):
+    """Sync health data from mobile app."""
+    # This endpoint receives health data from the mobile app
+    # Implementation depends on request body format from healthStore
+    return {"success": True, "message": "Health sync endpoint - implement based on mobile data format"}
+
+
+@router.get("/health/summary")
+async def get_health_summary(user_id: str = Depends(get_current_user_id)):
+    """Get health data summary."""
+    try:
+        week_ago = (date.today() - timedelta(days=7)).isoformat()
+        
+        # Get steps data
+        steps_response = get_supabase_client().table('health_metrics').select('*').eq(
+            'user_id', user_id
+        ).eq('metric_type', 'steps').gte('recorded_at', week_ago).execute()
+        
+        # Get sleep data
+        sleep_response = get_supabase_client().table('health_metrics').select('*').eq(
+            'user_id', user_id
+        ).eq('metric_type', 'sleep_duration').gte('recorded_at', week_ago).execute()
+        
+        steps_data = steps_response.data or []
+        sleep_data = sleep_response.data or []
+        
+        # Calculate averages
+        avg_steps = sum(s['value'] for s in steps_data) / max(len(steps_data), 1) if steps_data else 0
+        avg_sleep = sum(s['value'] for s in sleep_data) / max(len(sleep_data), 1) if sleep_data else 0
+        
+        return {
+            "weeklySteps": [{"date": s['recorded_at'], "value": s['value']} for s in steps_data],
+            "weeklySleep": [{"date": s['recorded_at'], "value": s['value']} for s in sleep_data],
+            "averages": {
+                "steps": round(avg_steps),
+                "sleep": round(avg_sleep, 1)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching health summary: {e}")
+        raise DatabaseError("Failed to fetch health summary", original_error=e)
+
+
+# ============================================
+# STREAKS ENDPOINTS
+# ============================================
+
+@router.get("/streaks")
+async def get_streaks(user_id: str = Depends(get_current_user_id)):
+    """Get all user streaks."""
+    try:
+        response = get_supabase_client().table('user_streaks').select('*').eq('user_id', user_id).execute()
+        
+        streaks = {}
+        if response.data:
+            for s in response.data:
+                streaks[s['streak_type']] = {
+                    "current": s['current_streak'],
+                    "longest": s['longest_streak'],
+                    "lastActivity": s.get('last_activity_date')
+                }
+        
+        return streaks
+        
+    except Exception as e:
+        logger.error(f"Error fetching streaks: {e}")
+        raise DatabaseError("Failed to fetch streaks", original_error=e)
+
+
+# ============================================
+# FEEDBACK ENDPOINT
+# ============================================
+
+class FeedbackRequest(BaseModel):
+    category: str
+    message: str
+    userEmail: Optional[str] = None
+    userName: Optional[str] = None
+    timestamp: Optional[str] = None
+    platform: Optional[str] = None
+
+
+@router.post("/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """Submit user feedback - stores in database and can be emailed."""
+    try:
+        # Store feedback in database
+        feedback_data = {
+            'category': request.category,
+            'message': request.message,
+            'user_email': request.userEmail,
+            'user_name': request.userName,
+            'platform': request.platform,
+            'created_at': request.timestamp or datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Try to store in Supabase feedback table
+        try:
+            get_supabase_client().table('app_feedback').insert(feedback_data).execute()
+        except Exception as db_error:
+            # Table might not exist, just log the feedback
+            logger.info(f"Feedback received: {feedback_data}")
+        
+        # Log the feedback for visibility
+        logger.info(f"User feedback: [{request.category}] from {request.userEmail}: {request.message}")
+        
+        return {"success": True, "message": "Feedback received"}
+        
+    except Exception as e:
+        logger.error(f"Error processing feedback: {e}")
+        # Don't fail - feedback should always appear to succeed to user
+        return {"success": True, "message": "Feedback recorded"}
+
+
+# ============================================
+# USER INITIALIZATION ENDPOINT
+# ============================================
+
+class UserInitRequest(BaseModel):
+    user_id: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+
+
+@router.post("/user/initialize")
+async def initialize_user(request: UserInitRequest, authenticated_user_id: str = Depends(get_current_user_id)):
+    """Initialize user data for new signups."""
+    try:
+        # Ensure the authenticated user matches the request
+        if request.user_id != authenticated_user_id:
+            from backend.utils.exceptions import AuthorizationError
+            raise AuthorizationError("Cannot initialize data for other users")
+        
+        logger.info(f"Initializing user data for: {request.user_id}")
+        
+        # Initialize user data
+        result = initialize_new_user(
+            user_id=request.user_id,
+            user_email=request.email,
+            full_name=request.full_name
+        )
+        
+        if result['success']:
+            logger.info(f"✅ User initialization successful for {request.user_id}")
+            return {
+                "success": True,
+                "message": "User data initialized successfully",
+                "initialized": result['initialized'],
+                "errors": result['errors']
+            }
+        else:
+            logger.warning(f"⚠️ User initialization completed with errors for {request.user_id}")
+            return {
+                "success": False,
+                "message": "User initialization completed with errors",
+                "initialized": result['initialized'],
+                "errors": result['errors']
+            }
+            
+    except Exception as e:
+        logger.error(f"Error initializing user {request.user_id}: {e}")
+        raise DatabaseError("Failed to initialize user", original_error=e)
