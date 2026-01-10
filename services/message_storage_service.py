@@ -27,7 +27,8 @@ class MessageStorageService:
         self,
         user_id: str,
         content: str,
-        thread_id: str
+        thread_id: str,
+        client_temp_id: Optional[str] = None
     ) -> str:
         """
         Store user message in database.
@@ -36,6 +37,7 @@ class MessageStorageService:
             user_id: The user's UUID
             content: The message text
             thread_id: The OpenAI thread ID
+            client_temp_id: Client's temp ID for reconciliation
             
         Returns:
             The chat_id (UUID) for linking to assistant response
@@ -44,7 +46,7 @@ class MessageStorageService:
             supabase = get_supabase_client()
             chat_id = str(uuid.uuid4())
             
-            supabase.table("messages").insert({
+            insert_data = {
                 "chat_id": chat_id,
                 "userid": user_id,
                 "direction": "incoming",
@@ -54,14 +56,21 @@ class MessageStorageService:
                 "read_in_app": False,
                 "created_at": datetime.now().isoformat(),
                 "metadata": {"thread_id": thread_id}
-            }).execute()
+            }
             
-            logger.info(f"💾 Stored user message: chat_id={chat_id}, user_id={user_id}")
+            # Store client_temp_id for reconciliation
+            if client_temp_id:
+                insert_data["client_temp_id"] = client_temp_id
+            
+            supabase.table("messages").insert(insert_data).execute()
+            
+            logger.info(f"💾 Stored user message: chat_id={chat_id}, user_id={user_id}, client_temp_id={client_temp_id}")
             return chat_id
             
         except Exception as e:
-            logger.error(f"❌ Error storing user message: {e}")
+            logger.error(f"❌ Error storing user message to Supabase: {e}")
             # Return None so the chat can continue even if storage fails
+            # but this is a failure we should track
             return None
     
     async def store_assistant_message(
@@ -69,7 +78,9 @@ class MessageStorageService:
         user_id: str,
         content: str,
         thread_id: str,
-        chat_id: str
+        chat_id: str,
+        run_id: Optional[str] = None,
+        assistant_temp_id: Optional[str] = None
     ) -> Optional[str]:
         """
         Store assistant message in database, linked to user message.
@@ -79,6 +90,8 @@ class MessageStorageService:
             content: The assistant's response text
             thread_id: The OpenAI thread ID
             chat_id: The chat_id from the user message to link to
+            run_id: The OpenAI run ID for delta tracking
+            assistant_temp_id: Client's temp ID for reconciliation (like user messages)
             
         Returns:
             The message id if successful, None otherwise
@@ -91,7 +104,7 @@ class MessageStorageService:
             supabase = get_supabase_client()
             message_id = str(uuid.uuid4())
             
-            supabase.table("messages").insert({
+            insert_data = {
                 "id": message_id,
                 "chat_id": chat_id,
                 "userid": user_id,
@@ -103,13 +116,23 @@ class MessageStorageService:
                 "delivered": True,
                 "created_at": datetime.now().isoformat(),
                 "metadata": {"thread_id": thread_id}
-            }).execute()
+            }
             
-            logger.info(f"💾 Stored assistant message: message_id={message_id}, chat_id={chat_id}")
+            # Store run_id for delta filtering
+            if run_id:
+                insert_data["run_id"] = run_id
+            
+            # Store assistant_temp_id for reconciliation (like user messages)
+            if assistant_temp_id:
+                insert_data["assistant_temp_id"] = assistant_temp_id
+            
+            supabase.table("messages").insert(insert_data).execute()
+            
+            logger.info(f"💾 Stored assistant message: message_id={message_id}, chat_id={chat_id}, run_id={run_id}, temp_id={assistant_temp_id}")
             return message_id
             
         except Exception as e:
-            logger.error(f"❌ Error storing assistant message: {e}")
+            logger.error(f"❌ Error storing assistant message to Supabase: {e}")
             return None
     
     async def store_message_pair(

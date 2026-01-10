@@ -6,6 +6,7 @@ Assistant-Native architecture with minimal context injection
 
 import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
@@ -79,8 +80,12 @@ class CoachingResponse:
     variation_applied: bool
     response_type: CoachingResponseType
     thread_id: Optional[str] = None
+    run_id: Optional[str] = None  # Current run ID for delta tracking
     function_calls: List[Dict[str, Any]] = None
     usage_stats: Optional[Dict[str, Any]] = None
+    # Reconciliation data - optional to handle partial failures
+    saved_ids: Optional[Dict[str, Optional[str]]] = None  # {"user_message": "db-uuid" or None, "assistant_temp_ids": [...]}
+    client_temp_id: Optional[str] = None  # Echo back the client's temp ID
 
 
 class UnifiedCoachingService:
@@ -165,7 +170,8 @@ class UnifiedCoachingService:
         user_id: str, 
         message: str, 
         response_type: CoachingResponseType = CoachingResponseType.COACHING,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        client_temp_id: Optional[str] = None
     ) -> CoachingResponse:
         """
         Main chat method - unified entry point for all coaching conversations
@@ -200,10 +206,11 @@ class UnifiedCoachingService:
             await self.thread_manager.add_message_to_thread(thread_id, message, "user")
             
             # Store user message in database
-            chat_id = await message_storage.store_user_message(
+            user_chat_id = await message_storage.store_user_message(
                 user_id=user_id,
                 content=message,
-                thread_id=thread_id
+                thread_id=thread_id,
+                client_temp_id=client_temp_id
             )
             
             # Run assistant - don't pass instructions so Assistant uses its system prompt
@@ -215,13 +222,36 @@ class UnifiedCoachingService:
             )
             
             # Store assistant messages in database
-            for msg_content in result["messages"]:
-                await message_storage.store_assistant_message(
+            saved_ids: Dict[str, Optional[str]] = {}
+            if user_chat_id:
+                saved_ids["user_message"] = user_chat_id
+            
+            # Track assistant temp IDs for client reconciliation
+            assistant_temp_ids: List[str] = []
+            
+            # Get run_id from result for delta tracking
+            current_run_id = result.get("run_id")
+            
+            for idx, msg_content in enumerate(result["messages"]):
+                # Generate assistant_temp_id for each message (like client_temp_id for user messages)
+                assistant_temp_id = f"assistant_{current_run_id}_{idx}" if current_run_id else str(uuid.uuid4())
+                assistant_temp_ids.append(assistant_temp_id)
+                
+                coach_msg_id = await message_storage.store_assistant_message(
                     user_id=user_id,
                     content=msg_content,
                     thread_id=thread_id,
-                    chat_id=chat_id
+                    chat_id=user_chat_id,
+                    run_id=current_run_id,
+                    assistant_temp_id=assistant_temp_id
                 )
+                saved_ids[f"coach_message_{idx}"] = coach_msg_id
+            
+            # Store assistant temp IDs for client reconciliation
+            saved_ids["assistant_temp_ids"] = assistant_temp_ids
+            
+            # Filter out None values before returning
+            saved_ids = {k: v for k, v in saved_ids.items() if v is not None}
             
             # Increment message count
             increment_message_count(user_id)
@@ -238,8 +268,11 @@ class UnifiedCoachingService:
                 variation_applied=True,
                 response_type=response_type,
                 thread_id=thread_id,
+                run_id=current_run_id,  # Include run_id for delta tracking
                 function_calls=result.get("function_calls", []),
-                usage_stats=usage_stats
+                usage_stats=usage_stats,
+                saved_ids=saved_ids,
+                client_temp_id=client_temp_id
             )
             
         except (CoreSenseException, Exception) as e:

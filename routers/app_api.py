@@ -115,21 +115,20 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
             logger.warning(f"Could not fetch insights: {e}")
             today_insight = None
         
-        # Get user streak
+        # Get user streak (simplified schema only)
+        current_streak = 0
         try:
             streak_response = (
                 supabase.table('user_streaks')
-                .select('*')
+                .select('current_streak')
                 .eq('user_id', user_id)
-                .eq('streak_type', 'check_in')
                 .limit(1)
                 .execute()
             )
-            current_streak = 0
-            if streak_response.data:
+            if streak_response.data and len(streak_response.data) > 0:
                 current_streak = streak_response.data[0].get('current_streak', 0)
         except Exception as e:
-            logger.warning(f"Could not fetch streaks: {e}")
+            logger.warning(f"Could not fetch streak: {e}")
             current_streak = 0
         
         # Get today's completed check-ins count
@@ -343,11 +342,39 @@ async def check_in_commitment(commitment_id: str, user_id: str = Depends(get_cur
             'completed_at': datetime.now(timezone.utc).isoformat()
         }).eq('id', commitment_id).eq('user_id', user_id).execute()
         
-        # Update streak
-        get_supabase_client().rpc('update_user_streak', {
-            'p_user_id': user_id,
-            'p_streak_type': 'commitment'
-        }).execute()
+        # Update streak (simplified schema)
+        try:
+            result = get_supabase_client().rpc('update_user_streak', {
+                'p_user_id': user_id,
+                'p_user_timezone': 'UTC'
+            }).execute()
+            logger.info(f"Streak update RPC result for {user_id}: {result.data}")
+        except Exception as streak_error:
+            logger.error(f"Could not update streak via RPC for {user_id}: {streak_error}")
+            # Try manual update as fallback
+            try:
+                today = date.today().isoformat()
+                supabase = get_supabase_client()
+                # Check if streak record exists
+                existing = supabase.table('user_streaks').select('*').eq('user_id', user_id).execute()
+                if existing.data:
+                    # Update existing record
+                    supabase.table('user_streaks').update({
+                        'current_streak': 1,
+                        'last_activity_date': today
+                    }).eq('user_id', user_id).execute()
+                    logger.info(f"Manual streak update for {user_id}")
+                else:
+                    # Insert new record
+                    supabase.table('user_streaks').insert({
+                        'user_id': user_id,
+                        'current_streak': 1,
+                        'longest_streak': 1,
+                        'last_activity_date': today
+                    }).execute()
+                    logger.info(f"Manual streak insert for {user_id}")
+            except manual_error:
+                logger.error(f"Manual streak update also failed for {user_id}: {manual_error}")
         
         return {"success": True}
         
@@ -688,34 +715,284 @@ async def get_health_summary(user_id: str = Depends(get_current_user_id)):
 
 
 # ============================================
-# STREAKS ENDPOINTS
+# STREAKS ENDPOINTS (Simplified Schema)
 # ============================================
 
-@router.get("/streaks")
-async def get_streaks(user_id: str = Depends(get_current_user_id)):
-    """Get all user streaks."""
+class RecordStreakRequest(BaseModel):
+    timezone: str = "UTC"
+
+
+@router.get("/streak")
+async def get_streak(user_id: str = Depends(get_current_user_id)):
+    """Get user's current streak (simplified schema only)."""
     try:
-        response = get_supabase_client().table('user_streaks').select('*').eq('user_id', user_id).execute()
+        response = (
+            get_supabase_client()
+            .table('user_streaks')
+            .select('current_streak,longest_streak,last_activity_date,user_timezone')
+            .eq('user_id', user_id)
+            .limit(1)
+            .execute()
+        )
+        
+        if response.data and len(response.data) > 0:
+            s = response.data[0]
+            return {
+                "currentStreak": s.get('current_streak', 0),
+                "longestStreak": s.get('longest_streak', 0),
+                "lastActivityDate": s.get('last_activity_date'),
+                "userTimezone": s.get('user_timezone', 'UTC')
+            }
+        
+        # No streak found - return defaults
+        return {
+            "currentStreak": 0,
+            "longestStreak": 0,
+            "lastActivityDate": None,
+            "userTimezone": "UTC"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching streak: {e}")
+        return {
+            "currentStreak": 0,
+            "longestStreak": 0,
+            "lastActivityDate": None,
+            "userTimezone": "UTC"
+        }
+
+
+@router.post("/streak/record")
+async def record_streak(
+    request: RecordStreakRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """Record a streak activity (simplified schema only)."""
+    try:
+        # Try the new RPC first
+        try:
+            result = (
+                get_supabase_client()
+                .rpc('update_user_streak', {
+                    'p_user_id': user_id,
+                    'p_user_timezone': request.timezone
+                })
+                .execute()
+            )
+            
+            if result.data:
+                return {
+                    "success": True,
+                    "currentStreak": result.data.get('current_streak', 0),
+                    "longestStreak": result.data.get('longest_streak', 0),
+                    "lastActivityDate": result.data.get('last_activity_date'),
+                    "userTimezone": result.data.get('user_timezone', request.timezone)
+                }
+        except Exception as rpc_error:
+            logger.warning(f"Streak RPC not available, using manual update: {rpc_error}")
+        
+        # Manual streak calculation
+        supabase = get_supabase_client()
+        today = date.today()
+        
+        response = (
+            supabase.table('user_streaks')
+            .select('*')
+            .eq('user_id', user_id)
+            .execute()
+        )
+        
+        if response.data and len(response.data) > 0:
+            current = response.data[0]
+            last_date = current.get('last_activity_date')
+            
+            if last_date == today.isoformat():
+                return {
+                    "success": True,
+                    "currentStreak": current.get('current_streak', 0),
+                    "longestStreak": current.get('longest_streak', 0),
+                    "lastActivityDate": last_date,
+                    "userTimezone": request.timezone
+                }
+            elif last_date == (today - timedelta(days=1)).isoformat():
+                new_streak = current.get('current_streak', 0) + 1
+                new_longest = max(current.get('longest_streak', 0), new_streak)
+                
+                supabase.table('user_streaks').update({
+                    'current_streak': new_streak,
+                    'longest_streak': new_longest,
+                    'last_activity_date': today.isoformat(),
+                    'user_timezone': request.timezone
+                }).eq('user_id', user_id).execute()
+                
+                return {
+                    "success": True,
+                    "currentStreak": new_streak,
+                    "longestStreak": new_longest,
+                    "lastActivityDate": today.isoformat(),
+                    "userTimezone": request.timezone
+                }
+            else:
+                supabase.table('user_streaks').update({
+                    'current_streak': 1,
+                    'last_activity_date': today.isoformat(),
+                    'user_timezone': request.timezone
+                }).eq('user_id', user_id).execute()
+                
+                return {
+                    "success": True,
+                    "currentStreak": 1,
+                    "longestStreak": current.get('longest_streak', 0),
+                    "lastActivityDate": today.isoformat(),
+                    "userTimezone": request.timezone
+                }
+        else:
+            supabase.table('user_streaks').insert({
+                'user_id': user_id,
+                'current_streak': 1,
+                'longest_streak': 1,
+                'last_activity_date': today.isoformat(),
+                'user_timezone': request.timezone
+            }).execute()
+            
+            return {
+                "success": True,
+                "currentStreak": 1,
+                "longestStreak": 1,
+                "lastActivityDate": today.isoformat(),
+                "userTimezone": request.timezone
+            }
+        
+    except Exception as e:
+        logger.error(f"Error recording streak: {e}")
+        return {
+            "success": False,
+            "currentStreak": 0,
+            "longestStreak": 0,
+            "lastActivityDate": None,
+            "userTimezone": request.timezone,
+            "error": str(e)
+        }
+
+
+@router.get("/streaks")
+async def get_streaks_legacy(user_id: str = Depends(get_current_user_id)):
+    """Get user streak (simplified schema - single record per user)."""
+    try:
+        response = (
+            get_supabase_client()
+            .table('user_streaks')
+            .select('current_streak,longest_streak,last_activity_date,user_timezone')
+            .eq('user_id', user_id)
+            .limit(1)
+            .execute()
+        )
         
         streaks = {}
-        if response.data:
-            for s in response.data:
-                streaks[s['streak_type']] = {
-                    "current": s['current_streak'],
-                    "longest": s['longest_streak'],
-                    "lastActivity": s.get('last_activity_date')
-                }
+        if response.data and len(response.data) > 0:
+            s = response.data[0]
+            streaks['check_in'] = {
+                "current": s.get('current_streak', 0),
+                "longest": s.get('longest_streak', 0),
+                "lastActivity": s.get('last_activity_date'),
+                "userTimezone": s.get('user_timezone', 'UTC')
+            }
         
         return streaks
         
     except Exception as e:
         logger.error(f"Error fetching streaks: {e}")
-        raise DatabaseError("Failed to fetch streaks", original_error=e)
+        return {}
 
 
 # ============================================
-# FEEDBACK ENDPOINT
+# ENGAGEMENT ENDPOINTS
 # ============================================
+
+class DidItRequest(BaseModel):
+    """Request for recording a completed action."""
+    timezone: str = "UTC"
+
+
+@router.post("/engagement/did-it")
+async def did_it(
+    request: DidItRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """Record a 'did it' action and update streak."""
+    try:
+        supabase = get_supabase_client()
+        today = date.today().isoformat()
+        
+        # Check if streak record exists
+        existing = supabase.table('user_streaks').select('*').eq('user_id', user_id).execute()
+        
+        if existing.data and len(existing.data) > 0:
+            current = existing.data[0]
+            last_date = current.get('last_activity_date')
+            
+            if last_date == today:
+                # Already recorded today
+                return {
+                    "success": True,
+                    "newTotal": current.get('current_streak', 0),
+                    "streak": current.get('current_streak', 0)
+                }
+            elif last_date == (today - timedelta(days=1)).isoformat():
+                # Consecutive day - increment
+                new_streak = current.get('current_streak', 0) + 1
+                new_longest = max(current.get('longest_streak', 0), new_streak)
+                
+                supabase.table('user_streaks').update({
+                    'current_streak': new_streak,
+                    'longest_streak': new_longest,
+                    'last_activity_date': today,
+                    'user_timezone': request.timezone
+                }).eq('user_id', user_id).execute()
+                
+                return {
+                    "success": True,
+                    "newTotal": new_streak,
+                    "streak": new_streak
+                }
+            else:
+                # Streak broken - reset to 1
+                supabase.table('user_streaks').update({
+                    'current_streak': 1,
+                    'longest_streak': max(current.get('longest_streak', 0), 1),
+                    'last_activity_date': today,
+                    'user_timezone': request.timezone
+                }).eq('user_id', user_id).execute()
+                
+                return {
+                    "success": True,
+                    "newTotal": 1,
+                    "streak": 1
+                }
+        else:
+            # No streak record - create new
+            supabase.table('user_streaks').insert({
+                'user_id': user_id,
+                'current_streak': 1,
+                'longest_streak': 1,
+                'last_activity_date': today,
+                'user_timezone': request.timezone
+            }).execute()
+            
+            return {
+                "success": True,
+                "newTotal": 1,
+                "streak": 1
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in did-it for {user_id}: {e}")
+        return {
+            "success": False,
+            "newTotal": 0,
+            "streak": 0,
+            "error": str(e)
+        }
 
 class FeedbackRequest(BaseModel):
     category: str

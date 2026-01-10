@@ -395,7 +395,7 @@ class PatternRecognitionService:
         try:
             streak_response = self.supabase.table('user_streaks').select('*').eq(
                 'user_id', user_id
-            ).eq('streak_type', 'check_in').execute()
+            ).execute()
             
             if not streak_response.data:
                 return None

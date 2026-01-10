@@ -1,11 +1,10 @@
 """
 Unified Coaching Router - Consolidated endpoints for all coaching functionality
-Replaces openai_coach.py and ai_coach.py with unified, consistent endpoints
 """
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 import logging
 
@@ -38,6 +37,7 @@ class CoachingChatRequest(BaseModel):
     message: str
     context: Optional[Dict[str, Any]] = None
     response_type: Optional[CoachingResponseType] = CoachingResponseType.COACHING
+    client_temp_id: Optional[str] = None  # Client's temp ID for reconciliation
 
 
 class CoachingChatResponse(BaseModel):
@@ -47,8 +47,13 @@ class CoachingChatResponse(BaseModel):
     variation_applied: bool
     response_type: CoachingResponseType
     thread_id: Optional[str] = None
+    run_id: Optional[str] = None  # Current run ID for delta tracking
     function_calls: List[Dict[str, Any]] = Field(default_factory=list)
     usage_stats: Optional[Dict[str, Any]] = None
+    # Reconciliation data - optional to handle partial failures
+    # saved_ids contains: {"user_message": "db-uuid", "assistant_temp_ids": ["temp_id_1", "temp_id_2"]}
+    saved_ids: Optional[Dict[str, Union[str, List[str]]]] = None
+    client_temp_id: Optional[str] = None
 
 
 class CoachingContextRequest(BaseModel):
@@ -132,10 +137,11 @@ async def chat_with_coach_custom_gpt(
             user_id=current_user_id,
             message=request.message,
             response_type=request.response_type,
-            context=request.context
+            context=request.context,
+            client_temp_id=request.client_temp_id
         )
         
-        logger.info(f"✅ CUSTOM GPT CHAT COMPLETE - Messages: {len(response.messages)}")
+        logger.info(f"✅ CUSTOM GPT CHAT COMPLETE - Messages: {len(response.messages)}, saved_ids: {response.saved_ids}")
         
         return CoachingChatResponse(
             messages=response.messages,
@@ -144,8 +150,11 @@ async def chat_with_coach_custom_gpt(
             variation_applied=response.variation_applied,
             response_type=response.response_type,
             thread_id=response.thread_id,
+            run_id=response.run_id,  # Include run_id for delta tracking
             function_calls=response.function_calls,
-            usage_stats=response.usage_stats
+            usage_stats=response.usage_stats,
+            saved_ids=response.saved_ids,
+            client_temp_id=response.client_temp_id
         )
         
     except (CoreSenseException, DatabaseError, ValidationError, NotFoundError, AuthorizationError):
@@ -161,58 +170,50 @@ async def get_chat_history(
     limit: int = 50,
     offset: int = 0
 ):
-    """Get chat history for a user from OpenAI thread"""
+    """Get chat history for a user from Supabase (source of truth)"""
     try:
         logger.info(f"📜 Getting chat history for user: {user_id}, limit: {limit}, offset: {offset}")
         
-        from backend.services.thread_management import thread_management
         from backend.database.supabase_client import get_supabase_client
         
-        # Get user's thread ID
         supabase = get_supabase_client()
-        thread_response = supabase.table("assistant_threads").select(
-            "openai_thread_id, created_at"
-        ).eq("user_id", user_id).eq("status", "active").execute()
         
-        if not thread_response.data:
+        # Query messages from Supabase (source of truth)
+        # Order by created_at descending to get newest messages first (matching OpenAI behavior)
+        response = supabase.table("messages").select(
+            "id, chat_id, userid, content, direction, sender_type, created_at, metadata"
+        ).eq("userid", user_id).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+        
+        if not response.data:
+            logger.info(f"📭 No messages found in Supabase for user: {user_id}")
             return {"messages": [], "has_more": False}
         
-        thread_id = thread_response.data[0]["openai_thread_id"]
+        # Reverse to get chronological order (oldest first) for display
+        messages_data = list(reversed(response.data))
         
-        # Get messages from OpenAI
-        if thread_management.client:
-            messages = thread_management.client.beta.threads.messages.list(
-                thread_id=thread_id,
-                limit=limit
-            )
-            
-            formatted_messages = []
-            for msg in messages.data:
-                content = ""
-                if msg.content:
-                    for c in msg.content:
-                        if c.type == "text":
-                            content = c.text.value
-                            break
-                
-                formatted_messages.append({
-                    "id": msg.id,
-                    "text": content,
-                    "direction": "outbound" if msg.role == "user" else "inbound",
-                    "timestamp": msg.created_at,
-                    "read": True
-                })
-            
-            return {
-                "messages": formatted_messages,
-                "has_more": len(messages.data) >= limit
-            }
-        else:
-            # Return empty if OpenAI client not available
-            return {"messages": [], "has_more": False}
+        formatted_messages = []
+        for msg in messages_data:
+            formatted_messages.append({
+                "id": msg["id"],
+                "text": msg.get("content", ""),
+                "content": msg.get("content", ""),
+                "direction": msg.get("direction", "incoming"),
+                "sender_type": msg.get("sender_type", "user"),
+                "timestamp": msg.get("created_at", datetime.now().isoformat()),
+                "created_at": msg.get("created_at", datetime.now().isoformat()),
+                "read": True,
+                "chat_id": msg.get("chat_id")
+            })
+        
+        logger.info(f"✅ Loaded {len(formatted_messages)} messages from Supabase for user: {user_id}")
+        
+        return {
+            "messages": formatted_messages,
+            "has_more": len(response.data) >= limit
+        }
         
     except Exception as e:
-        logger.error(f"❌ Error getting chat history: {e}", exc_info=True)
+        logger.error(f"❌ Error getting chat history from Supabase: {e}", exc_info=True)
         return {
             "messages": [],
             "has_more": False,
@@ -238,10 +239,11 @@ async def chat_with_coach(
             user_id=current_user_id,
             message=request.message,
             response_type=request.response_type,
-            context=request.context
+            context=request.context,
+            client_temp_id=request.client_temp_id
         )
         
-        logger.info(f"✅ UNIFIED CHAT COMPLETE - Messages: {len(response.messages)}, Type: {response.response_type}")
+        logger.info(f"✅ UNIFIED CHAT COMPLETE - Messages: {len(response.messages)}, Type: {response.response_type}, saved_ids: {response.saved_ids}")
         
         return CoachingChatResponse(
             messages=response.messages,
@@ -250,8 +252,11 @@ async def chat_with_coach(
             variation_applied=response.variation_applied,
             response_type=response.response_type,
             thread_id=response.thread_id,
+            run_id=response.run_id,  # Include run_id for delta tracking
             function_calls=response.function_calls,
-            usage_stats=response.usage_stats
+            usage_stats=response.usage_stats,
+            saved_ids=response.saved_ids,
+            client_temp_id=response.client_temp_id
         )
         
     except (CoreSenseException, DatabaseError, ValidationError, NotFoundError, AuthorizationError):

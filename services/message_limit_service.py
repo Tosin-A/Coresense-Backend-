@@ -196,7 +196,7 @@ def get_user_usage_stats(user_id: str) -> Dict[str, Any]:
             "messages_limit": messages_limit,
             "is_pro": is_pro,
             "messages_remaining": (
-                float('inf') if is_pro else max(0, messages_limit - messages_used)
+                999999 if is_pro else max(0, messages_limit - messages_used)
             ),
             "pro_upgraded_at": limits.get('pro_upgraded_at'),
             "usage_percentage": (

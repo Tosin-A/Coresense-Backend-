@@ -181,7 +181,7 @@ Context Type: {context.context_type}"""
         try:
             response = self.supabase.table("user_streaks").select(
                 "current_streak, longest_streak"
-            ).eq("user_id", user_id).eq("streak_type", "check_in").execute()
+            ).eq("user_id", user_id).execute()
             
             if response.data:
                 return (

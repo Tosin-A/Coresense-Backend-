@@ -293,7 +293,7 @@ class ThreadManagementService:
             run = self.client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run_id)
             
             if run.status == "completed":
-                return self._process_completed_run(thread_id)
+                return self._process_completed_run(thread_id, run_id)
             elif run.status == "requires_action":
                 await self._handle_function_calls(run, thread_id)
             elif run.status in ["failed", "cancelled", "expired"]:
@@ -405,28 +405,57 @@ class ThreadManagementService:
             logger.error(f"Error in analyze_conversation_pattern: {e}")
             return {"patterns": {}, "success": False, "error": str(e)}
     
-    def _process_completed_run(self, thread_id: str) -> Dict[str, Any]:
-        """Process completed run to extract messages"""
+    def _process_completed_run(self, thread_id: str, run_id: str) -> Dict[str, Any]:
+        """
+        Process completed run to extract ONLY new messages from this run.
+        
+        This fixes the "full-thread reload" problem by filtering messages
+        to only return those generated in the current run.
+        
+        Args:
+            thread_id: The OpenAI thread ID
+            run_id: The current run ID to filter by
+            
+        Returns:
+            Dict containing only new assistant messages from this run
+        """
         if not self.client:
             raise Exception("OpenAI client not available")
         
-        messages = self.client.beta.threads.messages.list(thread_id=thread_id)
+        # List all messages from the thread
+        all_messages = self.client.beta.threads.messages.list(thread_id=thread_id)
         
         assistant_messages = []
         function_calls = []
         
-        for message in messages.data:
-            if message.role == "assistant":
+        for message in all_messages.data:
+            # Filter: only process messages from the current run
+            # OpenAI messages have a 'run_id' attribute that links them to a specific run
+            if message.role == "assistant" and message.run_id == run_id:
                 for content in message.content:
                     if content.type == "text":
-                        assistant_messages.append(content.text.value)
+                        assistant_messages.append({
+                            "content": content.text.value,
+                            "message_id": message.id
+                        })
                     elif content.type == "tool_call":
-                        function_calls.append(content.tool_call.function)
+                        function_calls.append({
+                            "name": content.tool_call.function.name,
+                            "arguments": content.tool_call.function.arguments
+                        })
+        
+        # Extract just the text content for backward compatibility
+        message_texts = [msg["content"] for msg in assistant_messages]
+        
+        logger.info(f"📋 Processed run {run_id}: Found {len(assistant_messages)} new assistant messages")
         
         return {
-            "messages": assistant_messages,
+            "messages": message_texts,
+            "message_details": assistant_messages,  # Include details for reconciliation
             "function_calls": function_calls,
-            "total_messages": len(messages.data),
+            "run_id": run_id,
+            "total_messages": len(all_messages.data),
+            "new_messages_count": len(assistant_messages),
             "context_used": ["assistant_memory"]
         }
     
