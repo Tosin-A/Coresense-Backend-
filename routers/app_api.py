@@ -198,6 +198,14 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 async def get_insights(user_id: str = Depends(get_current_user_id)):
     """Get insights for insights screen - real user data only."""
     try:
+        # Get wellness score
+        from backend.services.wellness_analytics_service import wellness_analytics_service
+        wellness_score = await wellness_analytics_service.calculate_wellness_score(user_id)
+        
+        # Get generated insights from new service
+        from backend.services.insight_generation_service import insight_generation_service
+        generated_insights = await insight_generation_service.generate_insights(user_id, "weekly")
+        
         # Get weekly summary
         week_start = (date.today() - timedelta(days=7)).isoformat()
         summary_response = get_supabase_client().table('weekly_summaries').select('*').eq(
@@ -215,43 +223,34 @@ async def get_insights(user_id: str = Depends(get_current_user_id)):
                 "trend": s.get('trend', 'stable')
             }
         
-        # Get pattern insights
-        patterns_response = get_supabase_client().table('insights').select('*').eq(
-            'user_id', user_id
-        ).eq('dismissed', False).gte(
-            'insight_date', week_start
-        ).order('priority', desc=True).limit(5).execute()
-        
+        # Convert generated insights to pattern format
         patterns = []
-        if patterns_response.data:
-            for p in patterns_response.data:
-                patterns.append({
-                    "id": p['id'],
-                    "title": p['title'],
-                    "category": p['insight_type'],
-                    "interpretation": p['body'],
-                    "expandedContent": p.get('expanded_content'),
-                    "trend": p.get('trend', 'stable'),
-                    "trendValue": p.get('trend_value'),
-                    "dataPoints": p.get('data_points', [])
-                })
+        for insight in generated_insights[:5]:  # Top 5
+            patterns.append({
+                "id": f"generated-{insight.get('title', '').lower().replace(' ', '-')}",
+                "title": insight['title'],
+                "category": insight['category'],
+                "interpretation": insight['body'],
+                "expandedContent": None,
+                "trend": insight.get('trend', 'stable'),
+                "trendValue": insight.get('trend_value'),
+                "dataPoints": [],
+                "actionable": insight.get('actionable', False),
+                "actionText": insight.get('action_text')
+            })
         
         # Get actionable insight (highest priority actionable one)
-        actionable_response = get_supabase_client().table('insights').select('*').eq(
-            'user_id', user_id
-        ).eq('actionable', True).eq('dismissed', False).order(
-            'priority', desc=True
-        ).limit(1).execute()
-        
         actionable = None
-        if actionable_response.data and len(actionable_response.data) > 0:
-            a = actionable_response.data[0]
-            actionable = {
-                "id": a['id'],
-                "title": a['title'],
-                "body": a['body'],
-                "actionText": a.get('action_text')
-            }
+        if generated_insights:
+            actionable_insights = [i for i in generated_insights if i.get('actionable')]
+            if actionable_insights:
+                top_actionable = max(actionable_insights, key=lambda x: x.get('priority', 0))
+                actionable = {
+                    "id": f"actionable-{top_actionable['title'].lower().replace(' ', '-')}",
+                    "title": top_actionable['title'],
+                    "body": top_actionable['body'],
+                    "actionText": top_actionable.get('action_text')
+                }
         
         # Get saved insights count
         saved_response = get_supabase_client().table('insights').select('id').eq(
@@ -261,6 +260,15 @@ async def get_insights(user_id: str = Depends(get_current_user_id)):
         saved_count = len(saved_response.data) if saved_response.data else 0
         
         return {
+            "wellnessScore": {
+                "overall": wellness_score.overall,
+                "sleep": wellness_score.sleep,
+                "activity": wellness_score.activity,
+                "nutrition": wellness_score.nutrition,
+                "mental": wellness_score.mental,
+                "hydration": wellness_score.hydration,
+                "trend": wellness_score.trend
+            },
             "weeklySummary": weekly_summary,
             "patterns": patterns,
             "actionable": actionable,
