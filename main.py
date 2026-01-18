@@ -1,17 +1,10 @@
 """
 CoreSense Backend Server
 FastAPI application entry point.
+
+Run with: PYTHONPATH=. python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+Or use the Procfile/Dockerfile which set PYTHONPATH automatically.
 """
-
-import sys
-from pathlib import Path
-
-# Add parent directory to Python path for absolute imports
-# This allows imports like 'from backend.config import ...'
-backend_dir = Path(__file__).parent
-parent_dir = backend_dir.parent
-if str(parent_dir) not in sys.path:
-    sys.path.insert(0, str(parent_dir))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +13,7 @@ from backend.routers.app_api import router as app_api_router
 from backend.routers.coaching_router import router as coaching_router
 from backend.routers.notifications import router as notifications_router
 from backend.routers.patterns import router as patterns_router
-from backend.routers.wellness_router import router as wellness_router
+# from backend.routers.wellness_router import router as wellness_router  # TODO: Enable after creating wellness services
 from backend.middleware.rate_limit_middleware import RateLimitMiddleware
 from backend.config import get_settings
 
@@ -50,7 +43,7 @@ app.include_router(app_api_router)
 app.include_router(coaching_router)
 app.include_router(notifications_router)
 app.include_router(patterns_router)
-app.include_router(wellness_router)
+# app.include_router(wellness_router)  # TODO: Enable after creating wellness services
 
 
 @app.get("/health")
@@ -70,11 +63,13 @@ async def root():
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
     settings = get_settings()
+    port = int(os.environ.get("PORT", settings.port))
     uvicorn.run(
-        "main:app",
+        "backend.main:app",
         host="0.0.0.0",
-        port=settings.port,
+        port=port,
         reload=settings.environment == "development"
     )

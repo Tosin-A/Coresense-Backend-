@@ -9,7 +9,7 @@ from starlette.responses import Response
 from typing import Callable
 import logging
 
-from services.rate_limiter import check_rate_limit, record_rate_limit_request
+from backend.services.rate_limiter import check_rate_limit, record_rate_limit_request
 
 logger = logging.getLogger(__name__)
 

@@ -2,18 +2,14 @@
 """
 FastAPI server startup script for CoreSense backend.
 Handles dependency checking and server startup with proper error handling.
+
+Run from project root with: PYTHONPATH=. python backend/start_server.py
+Or use the Procfile/Dockerfile which set PYTHONPATH automatically.
 """
 
 import sys
 import os
 import subprocess
-from pathlib import Path
-
-# Add parent directory to Python path so we can import 'backend' module
-# This allows absolute imports like 'from backend.config import ...'
-backend_dir = Path(__file__).parent
-parent_dir = backend_dir.parent
-sys.path.insert(0, str(parent_dir))
 
 def check_dependencies():
     """Check if required dependencies are available."""
@@ -66,17 +62,20 @@ def start_server():
                 return False
         
         # Import and start the FastAPI app
-        from main import app
+        from backend.main import app
         import uvicorn
-        
-        print("\n🚀 Starting CoreSense xabackend server...")
-        print("📡 Server will be available at: http://localhost:8000")
-        print("📚 API documentation: http://localhost:8000/docs")
-        print("🔄 Health check: http://localhost:8000/health")
+
+        # Get port from environment variable (Railway sets PORT), fallback to 8000
+        port = int(os.environ.get("PORT", 8000))
+
+        print("\n🚀 Starting CoreSense backend server...")
+        print(f"📡 Server will be available at: http://localhost:{port}")
+        print(f"📚 API documentation: http://localhost:{port}/docs")
+        print(f"🔄 Health check: http://localhost:{port}/health")
         print("\nPress Ctrl+C to stop the server")
         print("-" * 50)
         
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
         
     except KeyboardInterrupt:
         print("\n\n🛑 Server stopped by user")
@@ -94,3 +93,4 @@ if __name__ == "__main__":
     
     if not success:
         sys.exit(1)
+

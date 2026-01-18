@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 import logging
 from datetime import datetime
 
-from database.supabase_client import get_supabase_client
+from backend.database.supabase_client import get_supabase_client
 from .message_limit_service import get_user_message_limit
 
 logger = logging.getLogger(__name__)

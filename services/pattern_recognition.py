@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 import statistics
 
-from database.supabase_client import get_supabase_client
+from backend.database.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

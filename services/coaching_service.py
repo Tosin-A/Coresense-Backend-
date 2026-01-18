@@ -21,7 +21,7 @@ from .message_limit_service import (
 )
 from .message_storage_service import message_storage
 from .model_router import model_router
-from utils.exceptions import CoreSenseException
+from backend.utils.exceptions import CoreSenseException
 from fastapi import status
 
 logger = logging.getLogger(__name__)

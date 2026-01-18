@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 import logging
 
-from database.supabase_client import get_supabase_client
+from backend.database.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

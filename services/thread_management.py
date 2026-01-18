@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from openai import OpenAI
 import uuid
 
-from database.supabase_client import get_supabase_client
+from backend.database.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class ThreadManagementService:
     """
     
     def __init__(self):
-        from config import get_settings
+        from backend.config import get_settings
         settings = get_settings()
         api_key = settings.openai_api_key
         

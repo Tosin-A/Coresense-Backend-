@@ -1,11 +1,12 @@
 #!/bin/sh
 set -e
 
-# Change to backend directory
-cd /app/backend || exit 1
+# Stay in /app where PYTHONPATH is set
+cd /app || exit 1
 
 # Get PORT from Railway environment variable, default to 8000
 PORT="${PORT:-8000}"
 
-# Start uvicorn server
-exec uvicorn main:app --host 0.0.0.0 --port "${PORT}" --workers 1
+# Start uvicorn server using fully qualified module path
+# PYTHONPATH=/app allows 'backend.main' to resolve
+exec uvicorn backend.main:app --host 0.0.0.0 --port "${PORT}" --workers 1

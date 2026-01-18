@@ -7,9 +7,9 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 import logging
 
-from database.supabase_client import get_supabase_client, get_conversation_memory
-from services.memory_extractor import analyze_message_for_memory
-from services.memory_service import (
+from backend.database.supabase_client import get_supabase_client, get_conversation_memory
+from backend.services.memory_extractor import analyze_message_for_memory
+from backend.services.memory_service import (
     create_long_term_memory,
     create_commitment,
     create_win,

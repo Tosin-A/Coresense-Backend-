@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone, date
 import logging
 import hashlib
 
-from database.supabase_client import get_supabase_client
+from backend.database.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

@@ -7,8 +7,8 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 import logging
 
-from database.supabase_client import get_supabase_client, get_conversation_memory
-from database.models import (
+from backend.database.supabase_client import get_supabase_client, get_conversation_memory
+from backend.database.models import (
     MemoryContext, ConversationMemory, LongTermMemory, Commitment, Win, MoodSignal
 )
 

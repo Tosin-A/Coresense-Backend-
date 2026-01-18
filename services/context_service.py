@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import json
 
-from database.supabase_client import get_supabase_client
+from backend.database.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
