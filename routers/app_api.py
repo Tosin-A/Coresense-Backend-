@@ -196,62 +196,53 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 
 @router.get("/insights")
 async def get_insights(user_id: str = Depends(get_current_user_id)):
-    """Get insights for insights screen - real user data only."""
+    """
+    Get insights for insights screen - real user data only.
+    
+    Optimizations:
+    1. Calculate wellness score ONCE and pass to generate_insights()
+    2. This avoids duplicate calculation that was causing 2x workload
+    """
     try:
-        # Get weekly summary
-        week_start = (date.today() - timedelta(days=7)).isoformat()
-        summary_response = get_supabase_client().table('weekly_summaries').select('*').eq(
-            'user_id', user_id
-        ).gte('week_start', week_start).order(
-            'week_start', desc=True
-        ).limit(1).execute()
+        # Calculate wellness score ONCE (this is cached, so subsequent calls are fast)
+        from backend.services.wellness_analytics_service import wellness_analytics_service
+        wellness_score = await wellness_analytics_service.calculate_wellness_score(user_id)
         
-        weekly_summary = None
-        if summary_response.data and len(summary_response.data) > 0:
-            s = summary_response.data[0]
-            weekly_summary = {
-                "summary": s['summary_text'],
-                "focusAreas": s.get('focus_areas', []),
-                "trend": s.get('trend', 'stable')
-            }
+        # Generate insights, passing the pre-calculated score
+        # This is the KEY optimization - no duplicate calculation!
+        from backend.services.insight_generation_service import insight_generation_service
+        generated_insights = await insight_generation_service.generate_insights(
+            user_id, "weekly", wellness_score=wellness_score
+        )
         
-        # Get pattern insights
-        patterns_response = get_supabase_client().table('insights').select('*').eq(
-            'user_id', user_id
-        ).eq('dismissed', False).gte(
-            'insight_date', week_start
-        ).order('priority', desc=True).limit(5).execute()
-        
+        # Convert generated insights to pattern format
         patterns = []
-        if patterns_response.data:
-            for p in patterns_response.data:
-                patterns.append({
-                    "id": p['id'],
-                    "title": p['title'],
-                    "category": p['insight_type'],
-                    "interpretation": p['body'],
-                    "expandedContent": p.get('expanded_content'),
-                    "trend": p.get('trend', 'stable'),
-                    "trendValue": p.get('trend_value'),
-                    "dataPoints": p.get('data_points', [])
-                })
+        for insight in generated_insights[:5]:  # Top 5
+            patterns.append({
+                "id": f"generated-{insight.get('title', '').lower().replace(' ', '-')}",
+                "title": insight['title'],
+                "category": insight['category'],
+                "interpretation": insight['body'],
+                "expandedContent": None,
+                "trend": insight.get('trend', 'stable'),
+                "trendValue": insight.get('trend_value'),
+                "dataPoints": [],
+                "actionable": insight.get('actionable', False),
+                "actionText": insight.get('action_text')
+            })
         
         # Get actionable insight (highest priority actionable one)
-        actionable_response = get_supabase_client().table('insights').select('*').eq(
-            'user_id', user_id
-        ).eq('actionable', True).eq('dismissed', False).order(
-            'priority', desc=True
-        ).limit(1).execute()
-        
         actionable = None
-        if actionable_response.data and len(actionable_response.data) > 0:
-            a = actionable_response.data[0]
-            actionable = {
-                "id": a['id'],
-                "title": a['title'],
-                "body": a['body'],
-                "actionText": a.get('action_text')
-            }
+        if generated_insights:
+            actionable_insights = [i for i in generated_insights if i.get('actionable')]
+            if actionable_insights:
+                top_actionable = max(actionable_insights, key=lambda x: x.get('priority', 0))
+                actionable = {
+                    "id": f"actionable-{top_actionable['title'].lower().replace(' ', '-')}",
+                    "title": top_actionable['title'],
+                    "body": top_actionable['body'],
+                    "actionText": top_actionable.get('action_text')
+                }
         
         # Get saved insights count
         saved_response = get_supabase_client().table('insights').select('id').eq(
@@ -261,7 +252,16 @@ async def get_insights(user_id: str = Depends(get_current_user_id)):
         saved_count = len(saved_response.data) if saved_response.data else 0
         
         return {
-            "weeklySummary": weekly_summary,
+            "wellnessScore": {
+                "overall": wellness_score.overall,
+                "sleep": wellness_score.sleep,
+                "activity": wellness_score.activity,
+                "nutrition": wellness_score.nutrition,
+                "mental": wellness_score.mental,
+                "hydration": wellness_score.hydration,
+                "trend": wellness_score.trend
+            },
+            "weeklySummary": None,
             "patterns": patterns,
             "actionable": actionable,
             "savedCount": saved_count
@@ -373,7 +373,7 @@ async def check_in_commitment(commitment_id: str, user_id: str = Depends(get_cur
                         'last_activity_date': today
                     }).execute()
                     logger.info(f"Manual streak insert for {user_id}")
-            except manual_error:
+            except Exception as manual_error:
                 logger.error(f"Manual streak update also failed for {user_id}: {manual_error}")
         
         return {"success": True}

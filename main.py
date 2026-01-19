@@ -71,5 +71,6 @@ if __name__ == "__main__":
         "backend.main:app",
         host="0.0.0.0",
         port=port,
-        reload=settings.environment == "development"
+        reload=settings.environment == "development",
+        loop="asyncio"  # Explicit asyncio loop for Python 3.14 compatibility
     )

@@ -3,13 +3,22 @@
 FastAPI server startup script for CoreSense backend.
 Handles dependency checking and server startup with proper error handling.
 
-Run from project root with: PYTHONPATH=. python backend/start_server.py
-Or use the Procfile/Dockerfile which set PYTHONPATH automatically.
+Can be run from anywhere:
+  - python backend/start_server.py (from project root)
+  - python start_server.py (from backend directory)
+  - PYTHONPATH=. python backend/start_server.py
 """
 
 import sys
 import os
 import subprocess
+
+# Fix Python path: ensure project root is in sys.path for absolute imports
+# This allows running the script from any directory
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_script_dir)  # Parent of backend/
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 def check_dependencies():
     """Check if required dependencies are available."""
@@ -75,7 +84,8 @@ def start_server():
         print("\nPress Ctrl+C to stop the server")
         print("-" * 50)
         
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+        # Use asyncio loop explicitly to avoid uvloop compatibility issues with Python 3.14
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info", loop="asyncio")
         
     except KeyboardInterrupt:
         print("\n\n🛑 Server stopped by user")

@@ -6,10 +6,15 @@ Core thread lifecycle management for Assistant-Native architecture
 import os
 import json
 import logging
+import asyncio
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 from openai import OpenAI
 import uuid
+
+# Maximum time to wait for a run to complete (in seconds)
+MAX_RUN_TIMEOUT_SECONDS = 120
 
 from backend.database.supabase_client import get_supabase_client
 
@@ -134,23 +139,25 @@ class ThreadManagementService:
         """Add message to existing thread"""
         if not self.client:
             raise Exception("OpenAI client not available")
-        
-        self.client.beta.threads.messages.create(
+
+        # Run blocking OpenAI call in thread pool to avoid blocking event loop
+        await asyncio.to_thread(
+            self.client.beta.threads.messages.create,
             thread_id=thread_id,
             role=role,
             content=content
         )
     
     async def run_assistant(
-        self, 
-        thread_id: str, 
-        user_id: str, 
+        self,
+        thread_id: str,
+        user_id: str,
         response_type: str,
         instructions: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Run assistant on thread with minimal instructions
-        
+
         This is the MAIN method - minimal context, assistant handles memory.
         Note: We don't pass instructions here so the OpenAI Assistant's
         built-in system instructions (personality) are used instead.
@@ -158,18 +165,27 @@ class ThreadManagementService:
         try:
             if not self.client:
                 raise Exception("OpenAI client not available")
-            
+
             # Create and run - don't pass instructions so Assistant uses its system prompt
-            run = self.client.beta.threads.runs.create(
+            # Run blocking OpenAI call in thread pool to avoid blocking event loop
+            run = await asyncio.to_thread(
+                self.client.beta.threads.runs.create,
                 thread_id=thread_id,
                 assistant_id=self.assistant_id,
                 instructions=None,  # Use Assistant's system instructions
                 tools=self.functions
             )
-            
-            # Wait for completion
+
+            # Wait for completion with timeout
             return await self._wait_for_completion(run.id, thread_id)
-            
+
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout waiting for assistant run to complete for thread {thread_id}")
+            return {
+                "messages": ["I'm taking too long to respond. Please try again."],
+                "function_calls": [],
+                "context_used": ["timeout_fallback"]
+            }
         except Exception as e:
             logger.error(f"Error running assistant: {e}")
             return {
@@ -244,8 +260,9 @@ class ThreadManagementService:
         """Create new OpenAI thread"""
         if not self.client:
             raise Exception("OpenAI client not available")
-        
-        thread = self.client.beta.threads.create()
+
+        # Run blocking OpenAI call in thread pool to avoid blocking event loop
+        thread = await asyncio.to_thread(self.client.beta.threads.create)
         return thread.id
     
     async def _store_thread_mapping(self, user_id: str, thread_id: str):
@@ -285,34 +302,52 @@ class ThreadManagementService:
         return instructions.get(response_type, "Provide helpful accountability coaching.")
     
     async def _wait_for_completion(self, run_id: str, thread_id: str) -> Dict[str, Any]:
-        """Wait for run completion and handle function calls"""
+        """Wait for run completion and handle function calls with timeout"""
         if not self.client:
             raise Exception("OpenAI client not available")
-        
+
+        start_time = time.monotonic()
+        poll_count = 0
+
         while True:
-            run = self.client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run_id)
-            
+            # Check for timeout
+            elapsed = time.monotonic() - start_time
+            if elapsed > MAX_RUN_TIMEOUT_SECONDS:
+                logger.error(f"Run {run_id} timed out after {elapsed:.1f}s")
+                raise asyncio.TimeoutError(f"Run timed out after {MAX_RUN_TIMEOUT_SECONDS}s")
+
+            # Run blocking OpenAI call in thread pool to avoid blocking event loop
+            run = await asyncio.to_thread(
+                self.client.beta.threads.runs.retrieve,
+                thread_id=thread_id,
+                run_id=run_id
+            )
+
+            poll_count += 1
+            if poll_count % 10 == 0:
+                logger.debug(f"Polling run {run_id}: status={run.status}, elapsed={elapsed:.1f}s")
+
             if run.status == "completed":
-                return self._process_completed_run(thread_id, run_id)
+                return await asyncio.to_thread(self._process_completed_run, thread_id, run_id)
             elif run.status == "requires_action":
                 await self._handle_function_calls(run, thread_id)
             elif run.status in ["failed", "cancelled", "expired"]:
                 raise Exception(f"Run failed: {run.status}")
-            
+
             await self._sleep(1)
     
     async def _handle_function_calls(self, run, thread_id: str):
         """Handle function calls from assistant"""
         if not self.client:
             return
-        
+
         if run.required_action and run.required_action.type == "submit_tool_outputs":
             tool_outputs = []
-            
+
             for tool_call in run.required_action.submit_tool_outputs.tool_calls:
                 function_name = tool_call.function.name
                 arguments = json.loads(tool_call.function.arguments)
-                
+
                 # Execute function
                 if function_name == "get_user_memory":
                     result = await self._execute_get_user_memory(arguments)
@@ -322,14 +357,15 @@ class ThreadManagementService:
                     result = await self._execute_analyze_pattern(arguments)
                 else:
                     result = {"error": f"Unknown function: {function_name}"}
-                
+
                 tool_outputs.append({
                     "tool_call_id": tool_call.id,
                     "output": json.dumps(result)
                 })
-            
-            # Submit outputs
-            self.client.beta.threads.runs.submit_tool_outputs(
+
+            # Submit outputs - run in thread pool to avoid blocking event loop
+            await asyncio.to_thread(
+                self.client.beta.threads.runs.submit_tool_outputs,
                 run_id=run.id,
                 thread_id=thread_id,
                 tool_outputs=tool_outputs
