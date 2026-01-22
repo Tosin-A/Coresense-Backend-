@@ -304,6 +304,65 @@ async def dismiss_insight(insight_id: str, user_id: str = Depends(get_current_us
 
 
 # ============================================
+# COMMITMENT PATTERN INSIGHTS ENDPOINTS
+# ============================================
+
+class InsightReactionRequest(BaseModel):
+    helpful: bool
+
+
+@router.get("/insights/commitment-patterns")
+async def get_commitment_insights(user_id: str = Depends(get_current_user_id)):
+    """
+    Get commitment-pattern-focused insights with AI coach interpretation.
+
+    Returns:
+        - coach_summary: Overall coach summary (if enough data)
+        - patterns: List of pattern insights (max 5)
+        - has_enough_data: Whether user has enough data for insights
+        - days_until_enough_data: Days needed if not enough data
+    """
+    try:
+        from backend.services.commitment_insights_engine import commitment_insights_engine
+
+        result = await commitment_insights_engine.get_active_insights(user_id)
+        return result
+
+    except Exception as e:
+        logger.error(f"Error fetching commitment insights: {e}")
+        # Return graceful fallback - never crash
+        return {
+            "coach_summary": None,
+            "patterns": [],
+            "has_enough_data": False,
+            "days_until_enough_data": 3
+        }
+
+
+@router.post("/insights/{insight_id}/reaction")
+async def record_insight_reaction(
+    insight_id: str,
+    request: InsightReactionRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """Record user reaction (helpful/not helpful) to an insight."""
+    try:
+        from backend.services.commitment_insights_engine import commitment_insights_engine
+
+        success = await commitment_insights_engine.mark_insight_reaction(
+            insight_id=insight_id,
+            user_id=user_id,
+            helpful=request.helpful
+        )
+
+        return {"success": success}
+
+    except Exception as e:
+        logger.error(f"Error recording insight reaction: {e}")
+        raise DatabaseError("Failed to record reaction", original_error=e)
+
+
+# ============================================
 # COMMITMENTS ENDPOINTS
 # ============================================
 
