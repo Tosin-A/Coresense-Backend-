@@ -339,6 +339,32 @@ async def get_commitment_insights(user_id: str = Depends(get_current_user_id)):
         }
 
 
+
+
+# ============================================
+# HEALTH PATTERN INSIGHTS ENDPOINTS
+# ============================================
+
+@router.get("/insights/health-patterns")
+async def get_health_insights(user_id: str = Depends(get_current_user_id)):
+    """
+    Get health-first insights derived from sleep/activity data.
+    """
+    try:
+        from backend.services.health_insights_engine import health_insights_engine
+
+        result = await health_insights_engine.get_active_insights(user_id)
+        return result
+
+    except Exception as e:
+        logger.error(f"Error fetching health insights: {e}")
+        return {
+            "coach_summary": None,
+            "patterns": [],
+            "has_enough_data": False,
+            "days_until_enough_data": 3
+        }
+
 @router.post("/insights/{insight_id}/reaction")
 async def record_insight_reaction(
     insight_id: str,
