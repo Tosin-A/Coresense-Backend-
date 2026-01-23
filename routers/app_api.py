@@ -303,6 +303,209 @@ async def dismiss_insight(insight_id: str, user_id: str = Depends(get_current_us
         raise DatabaseError("Failed to dismiss insight", original_error=e)
 
 
+
+
+@router.get("/insights/quick-stats")
+async def get_quick_stats(user_id: str = Depends(get_current_user_id)):
+    """
+    Get aggregated quick stats for the insights dashboard.
+
+    Returns:
+        - energy: current, avg this week, trend
+        - sleep: last night, avg this week, consistency
+        - mood: dominant mood, volatility
+        - streak: current streak, completion rate
+    """
+    try:
+        supabase = get_supabase_client()
+        now = datetime.now(timezone.utc)
+        week_ago = (now - timedelta(days=7)).isoformat()
+        two_weeks_ago = (now - timedelta(days=14)).isoformat()
+
+        def get_mood_label(value: float) -> str:
+            if value >= 4.5:
+                return 'very_happy'
+            elif value >= 3.5:
+                return 'happy'
+            elif value >= 2.5:
+                return 'neutral'
+            elif value >= 1.5:
+                return 'sad'
+            return 'very_sad'
+
+        energy_stats = {
+            'current': None,
+            'avg_this_week': None,
+            'avg_last_week': None,
+            'best_time': None,
+            'trend': 'stable'
+        }
+
+        try:
+            current_energy = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'energy')
+                .order('logged_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            if current_energy.data:
+                energy_stats['current'] = float(current_energy.data[0]['value'])
+
+            week_energy = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'energy')
+                .gte('logged_at', week_ago)
+                .execute()
+            )
+            if week_energy.data:
+                values = [float(r['value']) for r in week_energy.data]
+                energy_stats['avg_this_week'] = round(sum(values) / len(values), 1)
+
+            last_week_energy = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'energy')
+                .gte('logged_at', two_weeks_ago)
+                .lt('logged_at', week_ago)
+                .execute()
+            )
+            if last_week_energy.data:
+                values = [float(r['value']) for r in last_week_energy.data]
+                energy_stats['avg_last_week'] = round(sum(values) / len(values), 1)
+
+            if energy_stats['avg_this_week'] and energy_stats['avg_last_week']:
+                diff = energy_stats['avg_this_week'] - energy_stats['avg_last_week']
+                if diff > 0.3:
+                    energy_stats['trend'] = 'up'
+                elif diff < -0.3:
+                    energy_stats['trend'] = 'down'
+        except Exception as e:
+            logger.warning(f"Error calculating energy stats: {e}")
+
+        sleep_stats = {
+            'last_night': None,
+            'avg_this_week': None,
+            'consistency_score': None,
+            'trend': 'stable'
+        }
+
+        try:
+            last_sleep = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'sleep')
+                .order('logged_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            if last_sleep.data:
+                sleep_stats['last_night'] = float(last_sleep.data[0]['value'])
+
+            week_sleep = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'sleep')
+                .gte('logged_at', week_ago)
+                .execute()
+            )
+            if week_sleep.data:
+                values = [float(r['value']) for r in week_sleep.data]
+                avg = sum(values) / len(values)
+                sleep_stats['avg_this_week'] = round(avg, 1)
+
+                if len(values) > 1:
+                    mean = sum(values) / len(values)
+                    variance = sum((x - mean) ** 2 for x in values) / len(values)
+                    stddev = variance ** 0.5
+                    consistency = max(0, min(100, int(100 - stddev * 20)))
+                    sleep_stats['consistency_score'] = consistency
+        except Exception as e:
+            logger.warning(f"Error calculating sleep stats: {e}")
+
+        mood_stats = {
+            'dominant': None,
+            'consistency': 'stable'
+        }
+
+        try:
+            week_mood = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'mood')
+                .gte('logged_at', week_ago)
+                .execute()
+            )
+            if week_mood.data:
+                values = [float(r['value']) for r in week_mood.data]
+                from collections import Counter
+                rounded = [round(v) for v in values]
+                mode = Counter(rounded).most_common(1)[0][0]
+                mood_stats['dominant'] = get_mood_label(mode)
+
+                if len(values) > 1:
+                    mean = sum(values) / len(values)
+                    variance = sum((x - mean) ** 2 for x in values) / len(values)
+                    stddev = variance ** 0.5
+                    mood_stats['consistency'] = 'volatile' if stddev > 0.8 else 'stable'
+        except Exception as e:
+            logger.warning(f"Error calculating mood stats: {e}")
+
+        streak_stats = {
+            'current': 0,
+            'completion_rate_this_week': 0
+        }
+
+        try:
+            streak_response = (
+                supabase.table('user_streaks')
+                .select('current_streak')
+                .eq('user_id', user_id)
+                .limit(1)
+                .execute()
+            )
+            if streak_response.data:
+                streak_stats['current'] = streak_response.data[0].get('current_streak', 0)
+
+            commitments = (
+                supabase.table('commitments')
+                .select('status')
+                .eq('user_id', user_id)
+                .gte('created_at', week_ago)
+                .execute()
+            )
+            if commitments.data:
+                total = len(commitments.data)
+                completed = len([c for c in commitments.data if c['status'] == 'completed'])
+                streak_stats['completion_rate_this_week'] = round(completed / total, 2) if total > 0 else 0
+        except Exception as e:
+            logger.warning(f"Error calculating streak stats: {e}")
+
+        return {
+            'energy': energy_stats,
+            'sleep': sleep_stats,
+            'mood': mood_stats,
+            'streak': streak_stats
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching quick stats: {e}")
+        return {
+            'energy': {'current': None, 'avg_this_week': None, 'avg_last_week': None, 'best_time': None, 'trend': 'stable'},
+            'sleep': {'last_night': None, 'avg_this_week': None, 'consistency_score': None, 'trend': 'stable'},
+            'mood': {'dominant': None, 'consistency': 'stable'},
+            'streak': {'current': 0, 'completion_rate_this_week': 0}
+        }
+
+
 # ============================================
 # COMMITMENT PATTERN INSIGHTS ENDPOINTS
 # ============================================
