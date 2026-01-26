@@ -57,6 +57,20 @@ class HealthSyncRequest(BaseModel):
     metrics: List[HealthMetricIn]
 
 
+class MetricLogRequest(BaseModel):
+    """Request to log a single metric."""
+    metric_type: str  # 'energy', 'mood', 'sleep', 'stress', 'focus'
+    value: float
+    notes: Optional[str] = None
+    context: Optional[dict] = None
+
+
+class MetricBatchRequest(BaseModel):
+    """Request to log multiple metrics at once."""
+    metrics: List[MetricLogRequest]
+
+
+
 # ============================================
 # HOME SCREEN ENDPOINTS
 # ============================================
@@ -308,9 +322,9 @@ async def dismiss_insight(insight_id: str, user_id: str = Depends(get_current_us
         get_supabase_client().table('insights').update({
             'dismissed': True
         }).eq('id', insight_id).eq('user_id', user_id).execute()
-        
+
         return {"success": True}
-        
+
     except Exception as e:
         logger.error(f"Error dismissing insight: {e}")
         raise DatabaseError("Failed to dismiss insight", original_error=e)
@@ -520,6 +534,345 @@ async def get_quick_stats(user_id: str = Depends(get_current_user_id)):
 
 
 # ============================================
+# METRICS ENDPOINTS (Personal Analytics)
+# ============================================
+
+VALID_METRIC_TYPES = ['energy', 'mood', 'sleep', 'stress', 'focus']
+
+
+@router.post("/metrics/log")
+async def log_metric(request: MetricLogRequest, user_id: str = Depends(get_current_user_id)):
+    """Log a single metric (energy, mood, sleep, stress, focus)."""
+    try:
+        # Validate metric type
+        if request.metric_type not in VALID_METRIC_TYPES:
+            raise ValidationError(f"Invalid metric type. Must be one of: {VALID_METRIC_TYPES}")
+
+        supabase = get_supabase_client()
+
+        result = supabase.table('user_metrics').insert({
+            'user_id': user_id,
+            'metric_type': request.metric_type,
+            'value': request.value,
+            'notes': request.notes,
+            'context': request.context,
+            'logged_at': datetime.now(timezone.utc).isoformat()
+        }).execute()
+
+        if result.data:
+            return {
+                "success": True,
+                "metric": result.data[0]
+            }
+
+        return {"success": True}
+
+    except ValidationError:
+        raise
+    except Exception as e:
+        logger.error(f"Error logging metric: {e}")
+        raise DatabaseError("Failed to log metric", original_error=e)
+
+
+@router.post("/metrics/batch")
+async def log_batch_metrics(request: MetricBatchRequest, user_id: str = Depends(get_current_user_id)):
+    """Log multiple metrics at once (batch check-in)."""
+    try:
+        if not request.metrics:
+            raise ValidationError("At least one metric is required")
+
+        # Validate all metric types
+        for metric in request.metrics:
+            if metric.metric_type not in VALID_METRIC_TYPES:
+                raise ValidationError(f"Invalid metric type: {metric.metric_type}")
+
+        supabase = get_supabase_client()
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Build batch insert data
+        insert_data = []
+        for metric in request.metrics:
+            insert_data.append({
+                'user_id': user_id,
+                'metric_type': metric.metric_type,
+                'value': metric.value,
+                'notes': metric.notes,
+                'context': metric.context,
+                'logged_at': now
+            })
+
+        result = supabase.table('user_metrics').insert(insert_data).execute()
+
+        return {
+            "success": True,
+            "metrics": result.data if result.data else [],
+            "count": len(insert_data)
+        }
+
+    except ValidationError:
+        raise
+    except Exception as e:
+        logger.error(f"Error batch logging metrics: {e}")
+        raise DatabaseError("Failed to batch log metrics", original_error=e)
+
+
+@router.get("/metrics/latest")
+async def get_latest_metrics(user_id: str = Depends(get_current_user_id)):
+    """Get the most recent value for each metric type."""
+    try:
+        supabase = get_supabase_client()
+
+        # Query latest metric for each type
+        latest = {}
+        for metric_type in VALID_METRIC_TYPES:
+            result = (
+                supabase.table('user_metrics')
+                .select('value,logged_at,context')
+                .eq('user_id', user_id)
+                .eq('metric_type', metric_type)
+                .order('logged_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+
+            if result.data and len(result.data) > 0:
+                row = result.data[0]
+                latest[metric_type] = {
+                    'value': float(row['value']),
+                    'logged_at': row['logged_at'],
+                    'context': row.get('context')
+                }
+
+        return latest
+
+    except Exception as e:
+        logger.error(f"Error fetching latest metrics: {e}")
+        raise DatabaseError("Failed to fetch latest metrics", original_error=e)
+
+
+@router.get("/insights/quick-stats")
+async def get_quick_stats(user_id: str = Depends(get_current_user_id)):
+    """
+    Get aggregated quick stats for the insights dashboard.
+
+    Returns:
+        - energy: current, avg this week, trend
+        - sleep: last night, avg this week, consistency
+        - mood: dominant mood, volatility
+        - streak: current streak, completion rate
+    """
+    try:
+        supabase = get_supabase_client()
+        now = datetime.now(timezone.utc)
+        week_ago = (now - timedelta(days=7)).isoformat()
+        two_weeks_ago = (now - timedelta(days=14)).isoformat()
+
+        # Helper to get mood label
+        def get_mood_label(value: float) -> str:
+            if value >= 4.5:
+                return 'very_happy'
+            elif value >= 3.5:
+                return 'happy'
+            elif value >= 2.5:
+                return 'neutral'
+            elif value >= 1.5:
+                return 'sad'
+            return 'very_sad'
+
+        # Get energy stats
+        energy_stats = {
+            'current': None,
+            'avg_this_week': None,
+            'avg_last_week': None,
+            'best_time': None,
+            'trend': 'stable'
+        }
+
+        try:
+            # Current energy (most recent)
+            current_energy = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'energy')
+                .order('logged_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            if current_energy.data:
+                energy_stats['current'] = float(current_energy.data[0]['value'])
+
+            # This week's energy average
+            week_energy = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'energy')
+                .gte('logged_at', week_ago)
+                .execute()
+            )
+            if week_energy.data:
+                values = [float(r['value']) for r in week_energy.data]
+                energy_stats['avg_this_week'] = round(sum(values) / len(values), 1)
+
+            # Last week's energy average
+            last_week_energy = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'energy')
+                .gte('logged_at', two_weeks_ago)
+                .lt('logged_at', week_ago)
+                .execute()
+            )
+            if last_week_energy.data:
+                values = [float(r['value']) for r in last_week_energy.data]
+                energy_stats['avg_last_week'] = round(sum(values) / len(values), 1)
+
+            # Calculate trend
+            if energy_stats['avg_this_week'] and energy_stats['avg_last_week']:
+                diff = energy_stats['avg_this_week'] - energy_stats['avg_last_week']
+                if diff > 0.3:
+                    energy_stats['trend'] = 'up'
+                elif diff < -0.3:
+                    energy_stats['trend'] = 'down'
+
+        except Exception as e:
+            logger.warning(f"Error calculating energy stats: {e}")
+
+        # Get sleep stats
+        sleep_stats = {
+            'last_night': None,
+            'avg_this_week': None,
+            'consistency_score': None,
+            'trend': 'stable'
+        }
+
+        try:
+            # Last night's sleep
+            last_sleep = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'sleep')
+                .order('logged_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            if last_sleep.data:
+                sleep_stats['last_night'] = float(last_sleep.data[0]['value'])
+
+            # This week's sleep
+            week_sleep = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'sleep')
+                .gte('logged_at', week_ago)
+                .execute()
+            )
+            if week_sleep.data:
+                values = [float(r['value']) for r in week_sleep.data]
+                avg = sum(values) / len(values)
+                sleep_stats['avg_this_week'] = round(avg, 1)
+
+                # Calculate consistency (100 - stddev * 20, clamped to 0-100)
+                if len(values) > 1:
+                    mean = sum(values) / len(values)
+                    variance = sum((x - mean) ** 2 for x in values) / len(values)
+                    stddev = variance ** 0.5
+                    consistency = max(0, min(100, int(100 - stddev * 20)))
+                    sleep_stats['consistency_score'] = consistency
+
+        except Exception as e:
+            logger.warning(f"Error calculating sleep stats: {e}")
+
+        # Get mood stats
+        mood_stats = {
+            'dominant': None,
+            'consistency': 'stable'
+        }
+
+        try:
+            week_mood = (
+                supabase.table('user_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'mood')
+                .gte('logged_at', week_ago)
+                .execute()
+            )
+            if week_mood.data:
+                values = [float(r['value']) for r in week_mood.data]
+
+                # Dominant mood (mode of rounded values)
+                rounded = [round(v) for v in values]
+                from collections import Counter
+                mode = Counter(rounded).most_common(1)[0][0]
+                mood_stats['dominant'] = get_mood_label(mode)
+
+                # Volatility check
+                if len(values) > 1:
+                    mean = sum(values) / len(values)
+                    variance = sum((x - mean) ** 2 for x in values) / len(values)
+                    stddev = variance ** 0.5
+                    mood_stats['consistency'] = 'volatile' if stddev > 0.8 else 'stable'
+
+        except Exception as e:
+            logger.warning(f"Error calculating mood stats: {e}")
+
+        # Get streak stats
+        streak_stats = {
+            'current': 0,
+            'completion_rate_this_week': 0
+        }
+
+        try:
+            streak_response = (
+                supabase.table('user_streaks')
+                .select('current_streak')
+                .eq('user_id', user_id)
+                .limit(1)
+                .execute()
+            )
+            if streak_response.data:
+                streak_stats['current'] = streak_response.data[0].get('current_streak', 0)
+
+            # Get commitment completion rate this week
+            commitments = (
+                supabase.table('commitments')
+                .select('status')
+                .eq('user_id', user_id)
+                .gte('created_at', week_ago)
+                .execute()
+            )
+            if commitments.data:
+                total = len(commitments.data)
+                completed = len([c for c in commitments.data if c['status'] == 'completed'])
+                streak_stats['completion_rate_this_week'] = round(completed / total, 2) if total > 0 else 0
+
+        except Exception as e:
+            logger.warning(f"Error calculating streak stats: {e}")
+
+        return {
+            'energy': energy_stats,
+            'sleep': sleep_stats,
+            'mood': mood_stats,
+            'streak': streak_stats
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching quick stats: {e}")
+        # Return empty stats on error - don't crash
+        return {
+            'energy': {'current': None, 'avg_this_week': None, 'avg_last_week': None, 'best_time': None, 'trend': 'stable'},
+            'sleep': {'last_night': None, 'avg_this_week': None, 'consistency_score': None, 'trend': 'stable'},
+            'mood': {'dominant': None, 'consistency': 'stable'},
+            'streak': {'current': 0, 'completion_rate_this_week': 0}
+        }
+
+
+# ============================================
 # COMMITMENT PATTERN INSIGHTS ENDPOINTS
 # ============================================
 
@@ -556,7 +909,6 @@ async def get_commitment_insights(user_id: str = Depends(get_current_user_id)):
 
 
 
-
 # ============================================
 # HEALTH PATTERN INSIGHTS ENDPOINTS
 # ============================================
@@ -580,6 +932,7 @@ async def get_health_insights(user_id: str = Depends(get_current_user_id)):
             "has_enough_data": False,
             "days_until_enough_data": 3
         }
+
 
 @router.post("/insights/{insight_id}/reaction")
 async def record_insight_reaction(
@@ -1008,38 +1361,12 @@ async def sync_health_data(
             })
 
         supabase = get_supabase_client()
-        supabase.table("health_metrics").upsert(
+        response = supabase.table("health_metrics").upsert(
             payload, on_conflict="user_id,metric_type,recorded_at"
         ).execute()
 
-        # Upsert daily snapshots for sleep/steps so insights can run immediately
-        daily = {}
-        for metric in merged.values():
-            day = metric.recorded_at.date().isoformat()
-            if day not in daily:
-                daily[day] = {"steps": 0.0, "sleep_duration_hours": 0.0}
-            if metric.metric_type == "steps":
-                daily[day]["steps"] += metric.value
-            if metric.metric_type == "sleep_duration":
-                daily[day]["sleep_duration_hours"] += metric.value
-
-        snapshots = []
-        for day, values in daily.items():
-            has_steps = values["steps"] > 0
-            has_sleep = values["sleep_duration_hours"] > 0
-            completeness = round(((1 if has_steps else 0) + (1 if has_sleep else 0)) / 2, 2)
-            snapshots.append({
-                "user_id": user_id,
-                "date": day,
-                "steps": int(values["steps"]) if has_steps else None,
-                "sleep_duration_hours": round(values["sleep_duration_hours"], 2) if has_sleep else None,
-                "data_completeness": completeness,
-            })
-
-        if snapshots:
-            supabase.table("user_health_data").upsert(
-                snapshots, on_conflict="user_id,date"
-            ).execute()
+        # Daily aggregation now happens via health_metrics_daily database view
+        # No need to maintain separate user_health_data table
 
         return {"success": True, "inserted": len(payload)}
 

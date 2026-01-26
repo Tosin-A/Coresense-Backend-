@@ -141,12 +141,17 @@ class HealthInsightsEngine:
             }
 
     async def _fetch_user_health_data(self, user_id: str, days: int) -> List[Dict]:
+        """Fetch daily health data aggregated from health_metrics via database view."""
         try:
             start_date = (date.today() - timedelta(days=days - 1)).isoformat()
+
+            # Query the aggregation view with all fields including sleep times
             response = (
-                self.supabase.table("user_health_data")
+                self.supabase.table("health_metrics_daily")
                 .select(
-                    "date,sleep_duration_hours,steps,active_minutes,exercise_minutes,sedentary_minutes,hourly_activity"
+                    "date,sleep_duration_hours,sleep_start_hour,sleep_end_hour,"
+                    "sleep_start_time,sleep_end_time,steps,active_energy,"
+                    "avg_heart_rate,resting_heart_rate,data_completeness"
                 )
                 .eq("user_id", user_id)
                 .gte("date", start_date)
@@ -154,19 +159,26 @@ class HealthInsightsEngine:
                 .execute()
             )
             data = response.data or []
+
             if data:
+                # Add null fields for compatibility with pattern analysis methods
+                for row in data:
+                    row["hourly_activity"] = None
+                    row["active_minutes"] = None
+                    row["exercise_minutes"] = None
+                    row["sedentary_minutes"] = None
                 return data
 
-            # Fallback: aggregate raw health_metrics if snapshots not populated yet
-            aggregated = self._aggregate_health_metrics(user_id, start_date)
-            if aggregated:
-                self._upsert_health_snapshots(user_id, aggregated)
-            return aggregated
+            # Fallback: aggregate raw health_metrics if view query fails
+            return self._aggregate_health_metrics(user_id, start_date)
         except Exception as e:
             logger.error(f"Error fetching health data: {e}")
-            return []
+            # Fallback to direct aggregation
+            start_date = (date.today() - timedelta(days=days - 1)).isoformat()
+            return self._aggregate_health_metrics(user_id, start_date)
 
     def _aggregate_health_metrics(self, user_id: str, start_date: str) -> List[Dict]:
+        """Fallback aggregation when database view is not available."""
         try:
             response = (
                 self.supabase.table("health_metrics")
@@ -192,7 +204,11 @@ class HealthInsightsEngine:
                     {
                         "date": day,
                         "sleep_duration_hours": None,
+                        "sleep_start_hour": None,
+                        "sleep_end_hour": None,
                         "steps": None,
+                        "active_energy": None,
+                        "avg_heart_rate": None,
                         "active_minutes": None,
                         "exercise_minutes": None,
                         "sedentary_minutes": None,
@@ -202,38 +218,28 @@ class HealthInsightsEngine:
                 if metric_type == "sleep_duration":
                     current = daily[day]["sleep_duration_hours"] or 0
                     daily[day]["sleep_duration_hours"] = current + value
+                elif metric_type == "sleep_start":
+                    # Take earliest bedtime (min value)
+                    current = daily[day]["sleep_start_hour"]
+                    if current is None or value < current:
+                        daily[day]["sleep_start_hour"] = value
+                elif metric_type == "sleep_end":
+                    # Take latest wake time (max value)
+                    current = daily[day]["sleep_end_hour"]
+                    if current is None or value > current:
+                        daily[day]["sleep_end_hour"] = value
                 elif metric_type == "steps":
                     current = daily[day]["steps"] or 0
                     daily[day]["steps"] = current + int(value)
+                elif metric_type == "active_energy":
+                    current = daily[day]["active_energy"] or 0
+                    daily[day]["active_energy"] = current + value
 
             aggregated = [daily[day] for day in sorted(daily.keys())]
             return aggregated
         except Exception as e:
             logger.error(f"Error aggregating health_metrics: {e}")
             return []
-
-    def _upsert_health_snapshots(self, user_id: str, rows: List[Dict]) -> None:
-        try:
-            payload = []
-            for row in rows:
-                has_sleep = row.get("sleep_duration_hours") is not None
-                has_steps = row.get("steps") is not None
-                completeness = round(((1 if has_sleep else 0) + (1 if has_steps else 0)) / 2, 2)
-                payload.append(
-                    {
-                        "user_id": user_id,
-                        "date": row.get("date"),
-                        "sleep_duration_hours": row.get("sleep_duration_hours"),
-                        "steps": row.get("steps"),
-                        "data_completeness": completeness,
-                    }
-                )
-            if payload:
-                self.supabase.table("user_health_data").upsert(
-                    payload, on_conflict="user_id,date"
-                ).execute()
-        except Exception as e:
-            logger.warning(f"Failed to upsert health snapshots: {e}")
 
     def _count_days_with_data(self, health_data: List[Dict]) -> int:
         days = set()
@@ -513,7 +519,8 @@ class HealthInsightsEngine:
                     "pattern_data": pattern_data,
                     "calculated_at": datetime.utcnow().isoformat(),
                     "valid_until": (datetime.utcnow() + timedelta(days=7)).isoformat(),
-                }
+                },
+                on_conflict="user_id,pattern_type",
             ).execute()
         except Exception as e:
             logger.warning(f"Failed to upsert health pattern: {e}")
