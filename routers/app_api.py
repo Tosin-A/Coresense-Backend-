@@ -116,28 +116,45 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
         
         # Get today's insight
         try:
-            today = date.today().isoformat()
+            # Use created_at range to avoid hard dependency on insight_date column.
+            today = datetime.now(timezone.utc).date()
+            start_of_day = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).isoformat()
+            end_of_day = (datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)).isoformat()
+            # Fetch today's insights, excluding dismissed ones via insight_interactions
             insights_response = (
                 supabase.table('insights')
                 .select('*')
                 .eq('user_id', user_id)
-                .eq('insight_date', today)
-                .eq('dismissed', False)
+                .gte('created_at', start_of_day)
+                .lt('created_at', end_of_day)
                 .order('priority', desc=True)
-                .limit(1)
+                .limit(5)
                 .execute()
             )
-            
+
             today_insight = None
             if insights_response.data:
-                insight = insights_response.data[0]
-                today_insight = {
-                    "id": insight['id'],
-                    "title": insight['title'],
-                    "body": insight['body'],
-                    "category": insight['insight_type'],
-                    "actionable": insight.get('actionable', False)
-                }
+                # Get dismissed insight IDs from insight_interactions
+                dismissed_response = (
+                    supabase.table('insight_interactions')
+                    .select('insight_id')
+                    .eq('user_id', user_id)
+                    .eq('interaction_type', 'dismissed')
+                    .execute()
+                )
+                dismissed_ids = {r['insight_id'] for r in (dismissed_response.data or [])}
+
+                # Find the first non-dismissed insight
+                for insight in insights_response.data:
+                    if insight['id'] not in dismissed_ids:
+                        today_insight = {
+                            "id": insight['id'],
+                            "title": insight['title'],
+                            "body": insight['body'],
+                            "category": insight['insight_type'],
+                            "actionable": insight.get('actionable', False)
+                        }
+                        break
         except Exception as e:
             logger.warning(f"Could not fetch insights: {e}")
             today_insight = None
@@ -317,11 +334,13 @@ async def save_insight(insight_id: str, user_id: str = Depends(get_current_user_
 
 @router.post("/insights/{insight_id}/dismiss")
 async def dismiss_insight(insight_id: str, user_id: str = Depends(get_current_user_id)):
-    """Dismiss an insight."""
+    """Dismiss an insight by recording a dismissed interaction."""
     try:
-        get_supabase_client().table('insights').update({
-            'dismissed': True
-        }).eq('id', insight_id).eq('user_id', user_id).execute()
+        get_supabase_client().table('insight_interactions').insert({
+            'insight_id': insight_id,
+            'user_id': user_id,
+            'interaction_type': 'dismissed',
+        }).execute()
 
         return {"success": True}
 

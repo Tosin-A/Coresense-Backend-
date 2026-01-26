@@ -86,7 +86,7 @@ class HealthInsightsEngine:
                 if isinstance(result, Exception):
                     logger.warning(f"Health pattern detection failed: {result}")
                     continue
-                if result is not None and result["confidence"] >= 0.7:
+                if result is not None and result["confidence"] >= 0.4:
                     insights.append(result["insight"])
 
             type_priority = {
@@ -97,8 +97,11 @@ class HealthInsightsEngine:
             insights.sort(key=lambda x: type_priority.get(x.type, 99))
             insights = insights[:5]
 
+            has_risk = any(i.type == InsightType.RISK for i in insights)
             coach_summary = (
-                "Looked at your health data from the last week. You've got some patterns."
+                f"Looked at your health data from the last week. "
+                f"Found {len(insights)} pattern{'s' if len(insights) != 1 else ''}"
+                f"{' — some need attention' if has_risk else ' worth knowing about'}."
                 if insights
                 else None
             )
@@ -313,43 +316,81 @@ class HealthInsightsEngine:
         return {"insight": insight, "confidence": confidence}
 
     async def _analyze_energy_windows(self, user_id: str, health_data: List[Dict]) -> Optional[Dict]:
-        hourly_totals = [0.0] * 24
-        rows_with_hourly = 0
-        for row in health_data:
-            hourly = row.get("hourly_activity")
-            if isinstance(hourly, dict) and hourly:
-                rows_with_hourly += 1
-                for hour_str, value in hourly.items():
-                    try:
-                        hour = int(hour_str)
-                        hourly_totals[hour] += float(value)
-                    except Exception:
-                        continue
+        """Analyze energy windows using sleep schedule (bedtime/wake time) data."""
+        sleep_rows = [
+            r for r in health_data
+            if r.get("sleep_start_hour") is not None and r.get("sleep_end_hour") is not None
+        ]
 
-        if rows_with_hourly < 4 or sum(hourly_totals) <= 0:
+        if len(sleep_rows) < 4:
             return None
 
-        peak_start, peak_sum = self._peak_window(hourly_totals, window=3)
-        avg_hour = sum(hourly_totals) / 24 if hourly_totals else 0
-        pattern_strength = min(1.0, max(0.0, (peak_sum / max(avg_hour * 3, 1)) - 1))
-        confidence = self._confidence(rows_with_hourly, pattern_strength)
+        bedtimes = [float(r["sleep_start_hour"]) for r in sleep_rows]
+        wake_times = [float(r["sleep_end_hour"]) for r in sleep_rows]
 
-        peak_window = self._format_hour_window(peak_start, 3)
-        if 6 <= peak_start <= 9:
-            commentary = f"You're most active {peak_window}. Plan important stuff in the morning."
+        avg_bedtime = sum(bedtimes) / len(bedtimes)
+        avg_wake = sum(wake_times) / len(wake_times)
+
+        # Determine active window: wake time to bedtime
+        active_hours = avg_bedtime - avg_wake if avg_bedtime > avg_wake else (24 - avg_wake + avg_bedtime)
+
+        # Classify as morning/evening person based on wake time
+        is_morning_person = avg_wake < 7.0
+        is_night_person = avg_bedtime >= 23.0 or avg_bedtime < 2.0
+
+        # Pattern strength based on how clear the schedule is
+        bedtime_std = pstdev(bedtimes) if len(bedtimes) > 1 else 0
+        wake_std = pstdev(wake_times) if len(wake_times) > 1 else 0
+        consistency = max(0.0, 1.0 - (bedtime_std + wake_std) / 4.0)
+        pattern_strength = max(0.3, consistency)
+        confidence = self._confidence(len(sleep_rows), pattern_strength)
+
+        wake_label = self._hour_label(int(avg_wake))
+        bed_label = self._hour_label(int(avg_bedtime) % 24)
+
+        if is_morning_person:
+            commentary = f"You're up by {wake_label} most days. Front-load your important work."
             insight_type = InsightType.PROGRESS
-        elif 20 <= peak_start or peak_start <= 1:
-            commentary = (
-                f"You're most active {peak_window}. You're not a morning person. Stop pretending."
-            )
+            peak_window = f"{wake_label}-{self._hour_label(int(avg_wake) + 4)}"
+        elif is_night_person:
+            commentary = f"You're a night owl. Most active after 8pm. Stop pretending mornings work."
             insight_type = InsightType.BEHAVIORAL
+            peak_window = f"8pm-{bed_label}"
         else:
+            midpoint = (avg_wake + avg_bedtime) / 2
+            peak_start = int(midpoint - 1.5) % 24
+            peak_window = self._format_hour_window(peak_start, 3)
             commentary = f"Your energy peaks {peak_window}. Use that window for hard tasks."
             insight_type = InsightType.BEHAVIORAL
 
-        labels = [self._hour_label(h) for h in range(24)]
-        values = [round(v, 2) for v in hourly_totals]
-        highlight_index = peak_start
+        # Build chart: last 7 days showing bedtime and wake time
+        labels = []
+        bedtime_values = []
+        wake_values = []
+        if sleep_rows:
+            last_date = self._parse_date(sleep_rows[-1].get("date")) or date.today()
+        else:
+            last_date = date.today()
+
+        data_map = {}
+        for r in sleep_rows:
+            d = self._parse_date(r.get("date"))
+            if d:
+                data_map[d] = r
+
+        for delta in reversed(range(7)):
+            d = last_date - timedelta(days=delta)
+            labels.append(d.strftime("%a"))
+            row = data_map.get(d)
+            if row:
+                # Normalize bedtime for chart (show as hours past noon for visual clarity)
+                bt = float(row.get("sleep_start_hour", 0))
+                wt = float(row.get("sleep_end_hour", 0))
+                bedtime_values.append(round(bt, 1))
+                wake_values.append(round(wt, 1))
+            else:
+                bedtime_values.append(0)
+                wake_values.append(0)
 
         insight = HealthInsight(
             id=f"energy-{user_id}-{datetime.utcnow().isoformat()}",
@@ -359,8 +400,8 @@ class HealthInsightsEngine:
             evidence=PatternEvidence(
                 type=PatternType.ENERGY_WINDOWS,
                 labels=labels,
-                values=values,
-                highlight_index=highlight_index,
+                values=wake_values,
+                highlight_index=None,
                 trend_direction="stable",
                 trend_value=peak_window,
             ),
@@ -374,9 +415,11 @@ class HealthInsightsEngine:
             pattern_type=PatternType.ENERGY_WINDOWS.value,
             confidence=confidence,
             pattern_data={
+                "avg_bedtime": round(avg_bedtime, 1),
+                "avg_wake": round(avg_wake, 1),
                 "peak_window": peak_window,
-                "peak_start_hour": peak_start,
-                "rows_with_hourly": rows_with_hourly,
+                "is_morning_person": is_morning_person,
+                "is_night_person": is_night_person,
             },
         )
 
@@ -385,7 +428,7 @@ class HealthInsightsEngine:
     async def _analyze_activity_consistency(
         self, user_id: str, health_data: List[Dict]
     ) -> Optional[Dict]:
-        step_rows = [r for r in health_data if r.get("steps") is not None]
+        step_rows = [r for r in health_data if r.get("steps") is not None and float(r["steps"]) > 0]
         if len(step_rows) < 4:
             return None
 
@@ -396,17 +439,34 @@ class HealthInsightsEngine:
 
         step_std = pstdev(step_values) if len(step_values) > 1 else 0
         cv = step_std / avg_steps if avg_steps else 0
-        pattern_strength = min(1.0, max(0.0, (cv - 0.3) / 0.7))
+        max_steps = max(step_values)
+        min_steps = min(step_values)
+
+        # Pattern strength: any clear activity pattern is interesting
+        # High CV = inconsistent (risk insight), Low CV = consistent (progress insight)
+        pattern_strength = max(0.5, min(1.0, cv / 0.5)) if cv >= 0.3 else max(0.5, 1.0 - cv)
         confidence = self._confidence(len(step_rows), pattern_strength)
 
         labels, values = self._last_7_days_series(health_data, "steps")
         highlight_index = self._highlight_max_index(values)
 
         if cv >= 0.6:
-            commentary = "You move a lot some days, then nothing for days. All or nothing."
+            commentary = (
+                f"You move a lot some days ({int(max_steps):,} steps), "
+                f"then nothing ({int(min_steps):,}). All or nothing."
+            )
             insight_type = InsightType.RISK
+        elif cv >= 0.35:
+            commentary = (
+                f"Averaging {int(avg_steps):,} steps but with big swings. "
+                f"Build a daily floor you can hit consistently."
+            )
+            insight_type = InsightType.BEHAVIORAL
         else:
-            commentary = "Your movement is fairly steady. Small daily wins keep it easy."
+            commentary = (
+                f"Averaging {int(avg_steps):,} steps with steady consistency. "
+                f"That's a solid movement habit."
+            )
             insight_type = InsightType.PROGRESS
 
         insight = HealthInsight(
@@ -419,7 +479,7 @@ class HealthInsightsEngine:
                 labels=labels,
                 values=values,
                 highlight_index=highlight_index,
-                trend_direction="stable",
+                trend_direction="down" if cv >= 0.5 else "up" if cv < 0.3 else "stable",
                 trend_value=f"{int(avg_steps):,} avg steps",
             ),
             action_text="Ask Coach",
@@ -434,6 +494,8 @@ class HealthInsightsEngine:
             pattern_data={
                 "avg_steps": round(avg_steps),
                 "cv": round(cv, 2),
+                "max_steps": round(max_steps),
+                "min_steps": round(min_steps),
             },
         )
 
@@ -443,30 +505,58 @@ class HealthInsightsEngine:
         weekday_steps, weekend_steps = self._weekday_weekend_avgs(health_data, "steps")
         weekday_sleep, weekend_sleep = self._weekday_weekend_avgs(health_data, "sleep_duration_hours")
 
-        if weekday_steps is None or weekend_steps is None:
+        # Need at least one metric pair to compare
+        has_steps = weekday_steps is not None and weekend_steps is not None
+        has_sleep = weekday_sleep is not None and weekend_sleep is not None
+
+        if not has_steps and not has_sleep:
             return None
 
-        step_drop = (
-            (weekday_steps - weekend_steps) / weekday_steps if weekday_steps > 0 else 0
-        )
-        sleep_drop = (
-            (weekday_sleep - weekend_sleep) / weekday_sleep
-            if weekday_sleep and weekday_sleep > 0
-            else 0
-        )
-        pattern_strength = min(1.0, max(step_drop, sleep_drop))
+        step_diff = 0.0
+        sleep_diff = 0.0
+
+        if has_steps and weekday_steps > 0:
+            step_diff = (weekday_steps - weekend_steps) / weekday_steps
+        if has_sleep and weekday_sleep > 0:
+            sleep_diff = (weekday_sleep - weekend_sleep) / weekday_sleep
+
+        # Any noticeable difference is worth reporting
+        max_diff = max(abs(step_diff), abs(sleep_diff))
+        pattern_strength = max(0.4, min(1.0, max_diff / 0.3))
         confidence = self._confidence(len(health_data), pattern_strength)
 
-        commentary = (
-            f"Weekend activity drops {step_drop * 100:.0f}%. It throws off your week."
-            if step_drop > 0.25
-            else "Your weekends look steady. Keep the rhythm consistent."
-        )
-        insight_type = InsightType.RISK if step_drop > 0.25 else InsightType.PROGRESS
+        # Build labels and values - show both metrics if available
+        labels = []
+        values = []
+        if has_steps:
+            labels = ["Weekday Steps", "Weekend Steps"]
+            values = [round(weekday_steps), round(weekend_steps)]
 
-        labels = ["Weekday", "Weekend"]
-        values = [round(weekday_steps), round(weekend_steps)]
-        highlight_index = 1 if weekend_steps < weekday_steps else 0
+        if has_sleep:
+            if has_steps:
+                labels.extend(["Weekday Sleep", "Weekend Sleep"])
+                values.extend([round(weekday_sleep, 1), round(weekend_sleep, 1)])
+            else:
+                labels = ["Weekday Sleep", "Weekend Sleep"]
+                values = [round(weekday_sleep, 1), round(weekend_sleep, 1)]
+
+        # Commentary based on what's different
+        parts = []
+        if has_steps and abs(step_diff) > 0.15:
+            direction = "drops" if step_diff > 0 else "jumps"
+            parts.append(f"activity {direction} {abs(step_diff) * 100:.0f}%")
+        if has_sleep and abs(sleep_diff) > 0.1:
+            direction = "drops" if sleep_diff > 0 else "increases"
+            parts.append(f"sleep {direction} {abs(sleep_diff) * 100:.0f}%")
+
+        if parts:
+            commentary = f"Weekend {', '.join(parts)}. It throws off your week."
+            insight_type = InsightType.RISK
+        else:
+            commentary = "Your weekends look steady. Keep the rhythm consistent."
+            insight_type = InsightType.PROGRESS
+
+        highlight_index = 1  # highlight weekend value
 
         insight = HealthInsight(
             id=f"weekend-{user_id}-{datetime.utcnow().isoformat()}",
@@ -478,8 +568,8 @@ class HealthInsightsEngine:
                 labels=labels,
                 values=values,
                 highlight_index=highlight_index,
-                trend_direction="down" if step_drop > 0.1 else "stable",
-                trend_value=f"{step_drop * 100:.0f}% drop",
+                trend_direction="down" if max_diff > 0.1 else "stable",
+                trend_value=f"{max_diff * 100:.0f}% difference",
             ),
             action_text="Ask Coach",
             is_new=True,
@@ -491,17 +581,19 @@ class HealthInsightsEngine:
             pattern_type=PatternType.WEEKEND_EFFECT.value,
             confidence=confidence,
             pattern_data={
-                "weekday_steps": round(weekday_steps),
-                "weekend_steps": round(weekend_steps),
-                "weekday_sleep": weekday_sleep,
-                "weekend_sleep": weekend_sleep,
+                "weekday_steps": round(weekday_steps) if weekday_steps else None,
+                "weekend_steps": round(weekend_steps) if weekend_steps else None,
+                "weekday_sleep": round(weekday_sleep, 1) if weekday_sleep else None,
+                "weekend_sleep": round(weekend_sleep, 1) if weekend_sleep else None,
             },
         )
 
         return {"insight": insight, "confidence": confidence}
 
     def _confidence(self, sample_size: int, pattern_strength: float) -> float:
-        return min(1.0, (sample_size / MAX_DAYS) * pattern_strength)
+        # Use MIN_DAYS_FOR_INSIGHTS as denominator so 7 days of data = 1.0 sample factor
+        sample_factor = min(1.0, sample_size / MIN_DAYS_FOR_INSIGHTS)
+        return min(1.0, sample_factor * pattern_strength)
 
     def _upsert_pattern(
         self,
