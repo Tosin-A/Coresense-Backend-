@@ -258,6 +258,9 @@ class UpdatePreferencesRequest(BaseModel):
     goals: Optional[List[str]] = None
     healthkit_enabled: Optional[bool] = None
     healthkit_sync_frequency: Optional[str] = Field(None, pattern=r"^(daily|weekly|manual)$")
+    push_notifications: Optional[bool] = None
+    task_reminders: Optional[bool] = None
+    weekly_reports: Optional[bool] = None
 
 
 class WeeklySummary(BaseModel):

@@ -15,12 +15,23 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class TodoItem:
+    """Todo item for context"""
+    title: str
+    priority: str
+    due_date: Optional[str]
+    created_by: str  # 'user' or 'coach'
+    coach_reasoning: Optional[str] = None
+
+
+@dataclass
 class EssentialContext:
     """Minimal context needed for thread initialization"""
     user_name: str
     current_streak: int
     longest_streak: int
     active_commitments: List[str]
+    pending_todos: List[TodoItem]  # User's pending tasks
     user_id: str
     context_type: str  # 'initialization' | 'update' | 'minimal'
 
@@ -107,13 +118,27 @@ class ContextService:
     def format_for_assistant(self, context: EssentialContext) -> str:
         """Format context as message for Assistant"""
         commitments_text = ", ".join(context.active_commitments) if context.active_commitments else "None"
-        
+
+        # Format todos for the assistant
+        if context.pending_todos:
+            todos_lines = []
+            for todo in context.pending_todos:
+                due_info = f" (due: {todo.due_date})" if todo.due_date else ""
+                creator = "coach-assigned" if todo.created_by == "coach" else "self-set"
+                todos_lines.append(f"  - {todo.title} [{todo.priority}]{due_info} ({creator})")
+            todos_text = "\n".join(todos_lines)
+        else:
+            todos_text = "  None"
+
         return f"""USER CONTEXT UPDATE:
 
 Name: {context.user_name}
 Current Streak: {context.current_streak} days
 Longest Streak: {context.longest_streak} days
 Active Commitments: {commitments_text}
+
+Pending Tasks (nudge them about these):
+{todos_text}
 
 Context Type: {context.context_type}"""
     
@@ -123,18 +148,22 @@ Context Type: {context.context_type}"""
         """Get comprehensive context for thread initialization"""
         # Get user name
         user_name = await self._get_user_name(user_id)
-        
+
         # Get streak data
         current_streak, longest_streak = await self._get_streak_data(user_id)
-        
+
         # Get active commitments
         active_commitments = await self._get_active_commitments(user_id)
-        
+
+        # Get pending todos - tasks the coach can reference and nudge about
+        pending_todos = await self._get_pending_todos(user_id)
+
         return EssentialContext(
             user_name=user_name,
             current_streak=current_streak,
             longest_streak=longest_streak,
             active_commitments=active_commitments,
+            pending_todos=pending_todos,
             user_id=user_id,
             context_type="initialization"
         )
@@ -148,12 +177,14 @@ Context Type: {context.context_type}"""
         """Get minimal context - just essentials"""
         user_name = await self._get_user_name(user_id)
         current_streak, _ = await self._get_streak_data(user_id)
-        
+        pending_todos = await self._get_pending_todos(user_id)
+
         return EssentialContext(
             user_name=user_name,
             current_streak=current_streak,
             longest_streak=0,
             active_commitments=[],
+            pending_todos=pending_todos,
             user_id=user_id,
             context_type="minimal"
         )
@@ -199,12 +230,35 @@ Context Type: {context.context_type}"""
             response = self.supabase.table("commitments").select(
                 "commitment_text"
             ).eq("user_id", user_id).eq("status", "active").limit(3).execute()
-            
+
             if response.data:
                 return [c["commitment_text"] for c in response.data]
             return []
         except Exception as e:
             logger.error(f"Error getting active commitments: {e}")
+            return []
+
+    async def _get_pending_todos(self, user_id: str) -> List[TodoItem]:
+        """Get pending todos for user - these are tasks the coach can nudge about"""
+        try:
+            response = self.supabase.table("shared_todos").select(
+                "title, priority, due_date, created_by, coach_reasoning"
+            ).eq("user_id", user_id).in_("status", ["pending", "in_progress"]).limit(5).execute()
+
+            if response.data:
+                return [
+                    TodoItem(
+                        title=t["title"],
+                        priority=t.get("priority", "medium"),
+                        due_date=t.get("due_date"),
+                        created_by=t.get("created_by", "user"),
+                        coach_reasoning=t.get("coach_reasoning")
+                    )
+                    for t in response.data
+                ]
+            return []
+        except Exception as e:
+            logger.error(f"Error getting pending todos: {e}")
             return []
     
     async def _has_significant_data_change(self, user_id: str, last_injection: str) -> bool:
@@ -252,6 +306,7 @@ Context Type: {context.context_type}"""
             current_streak=0,
             longest_streak=0,
             active_commitments=[],
+            pending_todos=[],
             user_id=user_id,
             context_type="fallback"
         )

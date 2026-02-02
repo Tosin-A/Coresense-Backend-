@@ -12,6 +12,7 @@ import logging
 from backend.database.supabase_client import get_supabase_client
 from backend.middleware.auth_helper import get_current_user_id
 from backend.utils.exceptions import DatabaseError, NotFoundError, ValidationError
+from backend.services.notification_service import notification_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["todos"])
@@ -176,7 +177,21 @@ async def create_coach_todo(request: CreateCoachTodoRequest, user_id: str = Depe
         response = supabase.table('shared_todos').insert(todo_data).execute()
 
         if response.data and len(response.data) > 0:
-            return response.data[0]
+            created_todo = response.data[0]
+
+            # Send push notification to user about the new coach task
+            try:
+                await notification_service.send_coach_task_notification(
+                    user_id=user_id,
+                    task_id=created_todo['id'],
+                    task_title=created_todo['title'],
+                    coach_reasoning=created_todo.get('coach_reasoning')
+                )
+            except Exception as notif_error:
+                # Don't fail the request if notification fails
+                logger.warning(f"Failed to send coach task notification: {notif_error}")
+
+            return created_todo
 
         raise DatabaseError("Failed to create coach todo")
 

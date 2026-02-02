@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS health_metrics (
     source TEXT DEFAULT 'healthkit',
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW()
+    ,
+    recorded_date DATE
 );
 
 -- ============================================
@@ -23,11 +25,36 @@ CREATE TABLE IF NOT EXISTS health_metrics (
 CREATE INDEX IF NOT EXISTS idx_health_metrics_user_id
     ON health_metrics(user_id);
 
-CREATE INDEX IF NOT EXISTS idx_health_metrics_user_date
-    ON health_metrics(user_id, DATE(recorded_at));
+CREATE INDEX IF NOT EXISTS idx_health_metrics_user_recorded_date
+    ON health_metrics(user_id, recorded_date);
 
 CREATE INDEX IF NOT EXISTS idx_health_metrics_lookup
     ON health_metrics(user_id, metric_type, recorded_at DESC);
+
+-- ============================================
+-- Backfill recorded_date column for existing rows
+-- ============================================
+UPDATE health_metrics
+SET recorded_date = recorded_at::DATE
+WHERE recorded_date IS NULL;
+
+-- ============================================
+-- Trigger to keep recorded_date in sync with recorded_at
+-- ============================================
+CREATE OR REPLACE FUNCTION set_recorded_date()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.recorded_date := NEW.recorded_at::DATE;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_set_recorded_date ON health_metrics;
+
+CREATE TRIGGER trg_set_recorded_date
+BEFORE INSERT OR UPDATE ON health_metrics
+FOR EACH ROW
+EXECUTE FUNCTION set_recorded_date();
 
 -- ============================================
 -- Create unique constraint for upserts
@@ -70,10 +97,12 @@ CREATE POLICY "Service role full access to health_metrics" ON health_metrics
 -- ============================================
 -- Recreate the daily aggregation view
 -- ============================================
-CREATE OR REPLACE VIEW health_metrics_daily AS
+DROP VIEW IF EXISTS health_metrics_daily;
+
+CREATE VIEW health_metrics_daily AS
 SELECT
     user_id,
-    DATE(recorded_at) as date,
+    recorded_date AS date,
     -- Sleep metrics
     SUM(CASE WHEN metric_type = 'sleep_duration' THEN value ELSE 0 END) as sleep_duration_hours,
     MIN(CASE WHEN metric_type = 'sleep_start' THEN value END) as sleep_start_hour,
@@ -96,7 +125,7 @@ SELECT
     COUNT(DISTINCT metric_type) as metrics_count,
     MAX(recorded_at) as last_sync_at
 FROM health_metrics
-GROUP BY user_id, DATE(recorded_at);
+GROUP BY user_id, recorded_date;
 
 COMMENT ON VIEW health_metrics_daily IS 'Daily aggregation of health_metrics for insights engine';
 

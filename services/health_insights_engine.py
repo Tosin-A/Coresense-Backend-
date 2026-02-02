@@ -28,6 +28,10 @@ class PatternType(Enum):
     ACTIVITY_CONSISTENCY = "activity_consistency"
     ENERGY_WINDOWS = "energy_windows"
     WEEKEND_EFFECT = "weekend_effect"
+    # Check-in based patterns
+    MOOD_PATTERN = "mood_pattern"
+    CHECKIN_ENERGY_PATTERN = "checkin_energy_pattern"
+    STRESS_PATTERN = "stress_pattern"
 
 
 @dataclass
@@ -68,10 +72,18 @@ class HealthInsightsEngine:
     async def get_active_insights(self, user_id: str) -> Dict:
         try:
             logger.info(f"[HealthInsights] Getting active insights for user {user_id}")
-            health_data = await self._fetch_user_health_data(user_id, days=MAX_DAYS)
-            days_with_data = self._count_days_with_data(health_data)
 
-            logger.info(f"[HealthInsights] Total rows: {len(health_data)}, days_with_data: {days_with_data}, min_required: {MIN_DAYS_FOR_INSIGHTS}")
+            # Fetch both data sources in parallel
+            health_data, metrics_data = await asyncio.gather(
+                self._fetch_user_health_data(user_id, days=MAX_DAYS),
+                self._fetch_user_metrics_data(user_id, days=MAX_DAYS),
+            )
+
+            days_with_health = self._count_days_with_data(health_data)
+            days_with_metrics = self._count_days_with_metrics(metrics_data)
+            days_with_data = max(days_with_health, days_with_metrics)
+
+            logger.info(f"[HealthInsights] Health days: {days_with_health}, Metrics days: {days_with_metrics}, min_required: {MIN_DAYS_FOR_INSIGHTS}")
 
             if days_with_data < MIN_DAYS_FOR_INSIGHTS:
                 return {
@@ -81,17 +93,27 @@ class HealthInsightsEngine:
                     "days_until_enough_data": max(1, MIN_DAYS_FOR_INSIGHTS - days_with_data),
                 }
 
+            # Run all analyzers in parallel (4 health-based + 3 check-in based)
             results = await asyncio.gather(
+                # Existing health-based analyzers
                 self._analyze_sleep_patterns(user_id, health_data),
                 self._analyze_energy_windows(user_id, health_data),
                 self._analyze_activity_consistency(user_id, health_data),
                 self._analyze_weekend_effect(user_id, health_data),
+                # Check-in based analyzers
+                self._analyze_mood_patterns(user_id, metrics_data),
+                self._analyze_checkin_energy_patterns(user_id, metrics_data, health_data),
+                self._analyze_stress_patterns(user_id, metrics_data),
                 return_exceptions=True,
             )
 
+            pattern_names = [
+                "sleep", "energy_windows", "activity", "weekend_effect",
+                "mood", "checkin_energy", "stress"
+            ]
+
             insights: List[HealthInsight] = []
             for i, result in enumerate(results):
-                pattern_names = ["sleep", "energy_windows", "activity", "weekend_effect"]
                 if isinstance(result, Exception):
                     logger.warning(f"[HealthInsights] Pattern {pattern_names[i]} failed: {result}")
                     continue
@@ -112,8 +134,13 @@ class HealthInsightsEngine:
             insights = insights[:5]
 
             has_risk = any(i.type == InsightType.RISK for i in insights)
+            has_checkin_insights = any(
+                i.evidence.type in (PatternType.MOOD_PATTERN, PatternType.CHECKIN_ENERGY_PATTERN, PatternType.STRESS_PATTERN)
+                for i in insights
+            )
+            data_source = "your health and check-in data" if has_checkin_insights else "your health data"
             coach_summary = (
-                f"Looked at your health data from the last week. "
+                f"Looked at {data_source} from the last week. "
                 f"Found {len(insights)} pattern{'s' if len(insights) != 1 else ''}"
                 f"{' — some need attention' if has_risk else ' worth knowing about'}."
                 if insights
@@ -369,6 +396,7 @@ class HealthInsightsEngine:
                 "weekday_avg": weekday_avg,
                 "weekend_avg": weekend_avg,
             },
+            insight_title=insight.title,
         )
 
         return {"insight": insight, "confidence": confidence}
@@ -494,6 +522,7 @@ class HealthInsightsEngine:
                 "is_morning_person": is_morning_person,
                 "is_night_person": is_night_person,
             },
+            insight_title=insight.title,
         )
 
         return {"insight": insight, "confidence": confidence}
@@ -584,6 +613,7 @@ class HealthInsightsEngine:
                 "max_steps": round(max_steps),
                 "min_steps": round(min_steps),
             },
+            insight_title=insight.title,
         )
 
         return {"insight": insight, "confidence": confidence}
@@ -690,6 +720,7 @@ class HealthInsightsEngine:
                 "weekday_sleep": round(weekday_sleep, 1) if weekday_sleep else None,
                 "weekend_sleep": round(weekend_sleep, 1) if weekend_sleep else None,
             },
+            insight_title=insight.title,
         )
 
         return {"insight": insight, "confidence": confidence}
@@ -705,9 +736,18 @@ class HealthInsightsEngine:
         pattern_type: str,
         confidence: float,
         pattern_data: Dict,
+        insight_title: Optional[str] = None,
     ) -> None:
         try:
-            self.supabase.table("user_health_patterns").upsert(
+            # Check if this is a new pattern (not seen before)
+            existing = self.supabase.table("user_health_patterns").select(
+                "id, confidence_score"
+            ).eq("user_id", user_id).eq("pattern_type", pattern_type).execute()
+
+            is_new_pattern = not existing.data or len(existing.data) == 0
+
+            # Upsert the pattern
+            result = self.supabase.table("user_health_patterns").upsert(
                 {
                     "user_id": user_id,
                     "pattern_type": pattern_type,
@@ -718,6 +758,11 @@ class HealthInsightsEngine:
                 },
                 on_conflict="user_id,pattern_type",
             ).execute()
+
+            # Log new patterns with high confidence (notifications handled separately)
+            if is_new_pattern and confidence >= 0.6 and insight_title:
+                logger.info(f"New insight discovered for {user_id}: {pattern_type} - {insight_title}")
+
         except Exception as e:
             logger.warning(f"Failed to upsert health pattern: {e}")
 
@@ -809,6 +854,457 @@ class HealthInsightsEngine:
             return datetime.strptime(value, "%Y-%m-%d").date()
         except Exception:
             return None
+
+    # =========================================================================
+    # Check-in Data Methods (mood, energy, stress from user_metrics table)
+    # =========================================================================
+
+    async def _fetch_user_metrics_data(self, user_id: str, days: int) -> List[Dict]:
+        """Fetch daily check-in data (mood, energy, stress) from user_metrics table."""
+        try:
+            from datetime import timezone as tz
+            today_utc = datetime.now(tz.utc).date()
+            start_date = (today_utc - timedelta(days=days - 1)).isoformat()
+
+            logger.info(f"[HealthInsights] Fetching user_metrics for user {user_id}, start_date={start_date}")
+
+            response = (
+                self.supabase.table("user_metrics")
+                .select("metric_type,value,logged_at,context")
+                .eq("user_id", user_id)
+                .in_("metric_type", ["mood", "energy", "stress"])
+                .gte("logged_at", start_date)
+                .order("logged_at")
+                .execute()
+            )
+
+            rows = response.data or []
+            logger.info(f"[HealthInsights] user_metrics returned {len(rows)} rows")
+
+            if not rows:
+                return []
+
+            return self._aggregate_metrics_by_day(rows)
+        except Exception as e:
+            logger.error(f"Error fetching user metrics: {e}")
+            return []
+
+    def _aggregate_metrics_by_day(self, rows: List[Dict]) -> List[Dict]:
+        """Aggregate user_metrics rows into daily summaries."""
+        daily: Dict[str, Dict] = {}
+        for row in rows:
+            logged_at = row.get("logged_at") or ""
+            day = logged_at[:10]  # Extract date part
+            if not day:
+                continue
+
+            if day not in daily:
+                daily[day] = {
+                    "date": day,
+                    "mood_values": [],
+                    "energy_values": [],
+                    "stress_values": [],
+                }
+
+            metric_type = row.get("metric_type")
+            value = float(row.get("value", 0))
+
+            if metric_type == "mood":
+                daily[day]["mood_values"].append(value)
+            elif metric_type == "energy":
+                daily[day]["energy_values"].append(value)
+            elif metric_type == "stress":
+                daily[day]["stress_values"].append(value)
+
+        # Calculate daily averages
+        result = []
+        for day in sorted(daily.keys()):
+            d = daily[day]
+            result.append({
+                "date": day,
+                "avg_mood": sum(d["mood_values"]) / len(d["mood_values"]) if d["mood_values"] else None,
+                "avg_energy": sum(d["energy_values"]) / len(d["energy_values"]) if d["energy_values"] else None,
+                "avg_stress": sum(d["stress_values"]) / len(d["stress_values"]) if d["stress_values"] else None,
+                "mood_count": len(d["mood_values"]),
+                "energy_count": len(d["energy_values"]),
+                "stress_count": len(d["stress_values"]),
+            })
+
+        logger.info(f"[HealthInsights] Aggregated metrics: {len(result)} days with check-ins")
+        return result
+
+    def _count_days_with_metrics(self, metrics_data: List[Dict]) -> int:
+        """Count days with at least one metric logged."""
+        days = set()
+        for row in metrics_data:
+            if row.get("avg_mood") is not None or row.get("avg_energy") is not None or row.get("avg_stress") is not None:
+                days.add(row.get("date"))
+        return len(days)
+
+    def _day_of_week_avgs(self, rows: List[Dict], field: str) -> Dict[str, float]:
+        """Calculate average for each day of the week."""
+        dow_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        dow_values: Dict[int, List[float]] = {i: [] for i in range(7)}
+
+        for row in rows:
+            value = row.get(field)
+            if value is None:
+                continue
+            row_date = self._parse_date(row.get("date"))
+            if not row_date:
+                continue
+            dow_values[row_date.weekday()].append(float(value))
+
+        result = {}
+        for dow, values in dow_values.items():
+            if values:
+                result[dow_names[dow]] = sum(values) / len(values)
+        return result
+
+    def _calculate_trend(self, values: List[float]) -> float:
+        """Calculate trend as difference between last third and first third of values."""
+        if len(values) < 3:
+            return 0.0
+        third = max(1, len(values) // 3)
+        first_avg = sum(values[:third]) / third
+        last_avg = sum(values[-third:]) / third
+        return last_avg - first_avg
+
+    def _correlate_with_sleep(self, energy_rows: List[Dict], health_data: List[Dict]) -> Optional[float]:
+        """Get average sleep hours for days where we have energy data."""
+        if not health_data:
+            return None
+
+        sleep_by_date = {}
+        for row in health_data:
+            if row.get("sleep_duration_hours"):
+                sleep_by_date[row.get("date")] = float(row["sleep_duration_hours"])
+
+        # Get sleep values for dates where we have energy data
+        matching_sleep = []
+        for energy_row in energy_rows:
+            d = energy_row.get("date")
+            if d in sleep_by_date:
+                matching_sleep.append(sleep_by_date[d])
+
+        return sum(matching_sleep) / len(matching_sleep) if matching_sleep else None
+
+    # =========================================================================
+    # Check-in Pattern Analyzers
+    # =========================================================================
+
+    async def _analyze_mood_patterns(self, user_id: str, metrics_data: List[Dict]) -> Optional[Dict]:
+        """Analyze mood patterns from check-in data."""
+        mood_rows = [r for r in metrics_data if r.get("avg_mood") is not None]
+        if len(mood_rows) < 2:
+            return None
+
+        mood_values = [float(r["avg_mood"]) for r in mood_rows]
+        avg_mood = sum(mood_values) / len(mood_values)
+        mood_std = pstdev(mood_values) if len(mood_values) > 1 else 0
+
+        # Analyze weekday vs weekend mood
+        weekday_avg, weekend_avg = self._weekday_weekend_avgs(mood_rows, "avg_mood")
+
+        # Analyze day-of-week patterns (find low days)
+        dow_avgs = self._day_of_week_avgs(mood_rows, "avg_mood")
+        worst_day, worst_avg = min(dow_avgs.items(), key=lambda x: x[1]) if dow_avgs else (None, None)
+        best_day, best_avg = max(dow_avgs.items(), key=lambda x: x[1]) if dow_avgs else (None, None)
+
+        # Calculate trend (last 3 days vs first 3 days)
+        trend = self._calculate_trend(mood_values)
+
+        pattern_strength = min(1.0, mood_std / 1.0)  # Higher variance = stronger pattern
+        confidence = self._confidence(len(mood_rows), max(0.3, pattern_strength))
+
+        labels, values = self._last_7_days_series(mood_rows, "avg_mood")
+        highlight_index = self._highlight_min_index(values)
+
+        # Generate insight based on patterns
+        if avg_mood < 2.5:
+            insight_type = InsightType.RISK
+            commentary = f"Your mood has been low lately, averaging {avg_mood:.1f}/5. Let's talk about what's going on."
+            action_steps = [
+                "Try 10 minutes of sunlight within an hour of waking",
+                "Move your body for 20 minutes today - even a walk counts",
+                "Reach out to someone you trust and tell them how you're feeling",
+            ]
+        elif worst_day and worst_avg and best_avg and (best_avg - worst_avg) > 0.8:
+            insight_type = InsightType.BEHAVIORAL
+            commentary = f"Your mood dips on {worst_day}s ({worst_avg:.1f}/5) compared to {best_day}s ({best_avg:.1f}/5). What's different about those days?"
+            action_steps = [
+                f"Plan something enjoyable for {worst_day}s - even small rewards help",
+                f"Notice what's draining you on {worst_day}s vs energizing you on {best_day}s",
+                "Consider if work or obligations cluster on your low days",
+            ]
+        elif trend < -0.3:
+            insight_type = InsightType.BEHAVIORAL
+            commentary = f"Your mood has been trending down this week. Time to intervene before it spirals."
+            action_steps = [
+                "Pick one thing that usually lifts your mood and do it today",
+                "Get to bed 30 minutes earlier tonight",
+                "Reduce news and social media for the next 48 hours",
+            ]
+        else:
+            insight_type = InsightType.PROGRESS
+            commentary = f"Your mood is holding steady around {avg_mood:.1f}/5. Keep doing what you're doing."
+            action_steps = [
+                "Notice what's working and keep it in your routine",
+                "Small wins compound - celebrate consistency",
+            ]
+
+        trend_direction = "down" if trend < -0.2 else "up" if trend > 0.2 else "stable"
+        trend_value = f"{avg_mood:.1f}/5 avg"
+
+        insight = HealthInsight(
+            id=f"mood-{user_id}-{datetime.utcnow().isoformat()}",
+            type=insight_type,
+            title="Your Mood Pattern",
+            coach_commentary=commentary,
+            evidence=PatternEvidence(
+                type=PatternType.MOOD_PATTERN,
+                labels=labels,
+                values=values,
+                highlight_index=highlight_index,
+                trend_direction=trend_direction,
+                trend_value=trend_value,
+            ),
+            action_text="Ask Coach",
+            is_new=True,
+            created_at=datetime.utcnow(),
+            action_steps=action_steps,
+        )
+
+        self._upsert_pattern(
+            user_id=user_id,
+            pattern_type=PatternType.MOOD_PATTERN.value,
+            confidence=confidence,
+            pattern_data={
+                "avg_mood": round(avg_mood, 2),
+                "mood_std": round(mood_std, 2),
+                "weekday_avg": weekday_avg,
+                "weekend_avg": weekend_avg,
+                "worst_day": worst_day,
+                "trend": round(trend, 2),
+            },
+            insight_title=insight.title,
+        )
+
+        return {"insight": insight, "confidence": confidence}
+
+    async def _analyze_checkin_energy_patterns(
+        self, user_id: str, metrics_data: List[Dict], health_data: List[Dict]
+    ) -> Optional[Dict]:
+        """Analyze energy patterns from check-ins, correlating with sleep when available."""
+        energy_rows = [r for r in metrics_data if r.get("avg_energy") is not None]
+        if len(energy_rows) < 2:
+            return None
+
+        energy_values = [float(r["avg_energy"]) for r in energy_rows]
+        avg_energy = sum(energy_values) / len(energy_values)
+        energy_std = pstdev(energy_values) if len(energy_values) > 1 else 0
+
+        # Build sleep correlation if we have matching health data
+        sleep_correlation = self._correlate_with_sleep(energy_rows, health_data)
+
+        # Analyze day-of-week patterns
+        dow_avgs = self._day_of_week_avgs(energy_rows, "avg_energy")
+        worst_day, worst_avg = min(dow_avgs.items(), key=lambda x: x[1]) if dow_avgs else (None, None)
+        best_day, best_avg = max(dow_avgs.items(), key=lambda x: x[1]) if dow_avgs else (None, None)
+
+        trend = self._calculate_trend(energy_values)
+
+        pattern_strength = min(1.0, energy_std / 1.0)
+        confidence = self._confidence(len(energy_rows), max(0.3, pattern_strength))
+
+        labels, values = self._last_7_days_series(energy_rows, "avg_energy")
+        highlight_index = self._highlight_min_index(values)
+
+        # Generate insight based on patterns
+        if avg_energy < 2.5:
+            insight_type = InsightType.RISK
+            if sleep_correlation and sleep_correlation < 6.5:
+                commentary = f"Your energy is low ({avg_energy:.1f}/5) and your sleep averaging {sleep_correlation:.1f}h might be why."
+                action_steps = [
+                    "Get 7+ hours tonight - make it non-negotiable",
+                    "Cut caffeine after 2 PM",
+                    "Consider a 20-minute power nap between 1-3 PM",
+                ]
+            else:
+                commentary = f"Your energy has been dragging at {avg_energy:.1f}/5. Something's draining your battery."
+                action_steps = [
+                    "Hydrate - dehydration tanks energy. Aim for 8 glasses today",
+                    "Get outside for 15 minutes - natural light resets your system",
+                    "Check if you're eating enough protein and complex carbs",
+                ]
+        elif worst_day and best_day and best_avg and worst_avg and (best_avg - worst_avg) > 0.8:
+            insight_type = InsightType.BEHAVIORAL
+            commentary = f"Your energy tanks on {worst_day}s ({worst_avg:.1f}/5). {best_day}s are your power days ({best_avg:.1f}/5)."
+            action_steps = [
+                f"Schedule demanding tasks on {best_day}s when possible",
+                f"Protect {worst_day}s - lighter work, no major decisions",
+                "Track what you eat/drink on low days vs high days",
+            ]
+        elif trend < -0.3:
+            insight_type = InsightType.BEHAVIORAL
+            commentary = f"Your energy is on a downward slide. Time to troubleshoot before you hit empty."
+            action_steps = [
+                "Audit your sleep this week - are you actually resting?",
+                "Look for energy vampires: stress, poor food, dehydration",
+                "Try a 10-minute walk after lunch today",
+            ]
+        else:
+            insight_type = InsightType.PROGRESS
+            commentary = f"Your energy is stable at {avg_energy:.1f}/5. You're managing your battery well."
+            action_steps = [
+                "Keep tracking - you're building self-awareness",
+                "Note what boosts your energy so you can replicate it",
+            ]
+
+        trend_direction = "down" if trend < -0.2 else "up" if trend > 0.2 else "stable"
+        trend_value = f"{avg_energy:.1f}/5 avg"
+
+        insight = HealthInsight(
+            id=f"checkin-energy-{user_id}-{datetime.utcnow().isoformat()}",
+            type=insight_type,
+            title="Your Energy Levels",
+            coach_commentary=commentary,
+            evidence=PatternEvidence(
+                type=PatternType.CHECKIN_ENERGY_PATTERN,
+                labels=labels,
+                values=values,
+                highlight_index=highlight_index,
+                trend_direction=trend_direction,
+                trend_value=trend_value,
+            ),
+            action_text="Ask Coach",
+            is_new=True,
+            created_at=datetime.utcnow(),
+            action_steps=action_steps,
+        )
+
+        self._upsert_pattern(
+            user_id=user_id,
+            pattern_type=PatternType.CHECKIN_ENERGY_PATTERN.value,
+            confidence=confidence,
+            pattern_data={
+                "avg_energy": round(avg_energy, 2),
+                "energy_std": round(energy_std, 2),
+                "worst_day": worst_day,
+                "best_day": best_day,
+                "sleep_correlation": round(sleep_correlation, 2) if sleep_correlation else None,
+                "trend": round(trend, 2),
+            },
+            insight_title=insight.title,
+        )
+
+        return {"insight": insight, "confidence": confidence}
+
+    async def _analyze_stress_patterns(self, user_id: str, metrics_data: List[Dict]) -> Optional[Dict]:
+        """Analyze stress patterns from check-in data."""
+        stress_rows = [r for r in metrics_data if r.get("avg_stress") is not None]
+        if len(stress_rows) < 2:
+            return None
+
+        stress_values = [float(r["avg_stress"]) for r in stress_rows]
+        avg_stress = sum(stress_values) / len(stress_values)
+        stress_std = pstdev(stress_values) if len(stress_values) > 1 else 0
+
+        # Analyze weekday vs weekend stress
+        weekday_avg, weekend_avg = self._weekday_weekend_avgs(stress_rows, "avg_stress")
+
+        # Analyze day-of-week patterns (find high stress days)
+        dow_avgs = self._day_of_week_avgs(stress_rows, "avg_stress")
+        worst_day, worst_avg = max(dow_avgs.items(), key=lambda x: x[1]) if dow_avgs else (None, None)
+        best_day, best_avg = min(dow_avgs.items(), key=lambda x: x[1]) if dow_avgs else (None, None)
+
+        trend = self._calculate_trend(stress_values)
+
+        pattern_strength = min(1.0, avg_stress / 3.0)  # Higher stress = stronger pattern
+        confidence = self._confidence(len(stress_rows), max(0.3, pattern_strength))
+
+        labels, values = self._last_7_days_series(stress_rows, "avg_stress")
+        highlight_index = self._highlight_max_index(values)  # Highlight highest stress day
+
+        # Generate insight based on patterns
+        if avg_stress > 3.5:
+            insight_type = InsightType.RISK
+            commentary = f"Your stress is running hot at {avg_stress:.1f}/5. That's not sustainable."
+            action_steps = [
+                "Take 5 minutes right now to do box breathing (4-4-4-4)",
+                "Write down the top 3 things stressing you - get them out of your head",
+                "Say no to one thing today. Just one.",
+            ]
+        elif weekday_avg and weekend_avg and weekday_avg > weekend_avg + 0.5:
+            insight_type = InsightType.BEHAVIORAL
+            commentary = f"Weekdays stress you out ({weekday_avg:.1f}/5) way more than weekends ({weekend_avg:.1f}/5). Work is the culprit."
+            action_steps = [
+                "Build a 10-minute decompression ritual for end of workday",
+                "Block 'focus time' on your calendar to reduce meeting overwhelm",
+                "Start Monday with your hardest task - don't let it loom all week",
+            ]
+        elif worst_day and worst_avg and best_avg and (worst_avg - best_avg) > 1.0:
+            insight_type = InsightType.BEHAVIORAL
+            commentary = f"Stress spikes on {worst_day}s ({worst_avg:.1f}/5). What's happening that day?"
+            action_steps = [
+                f"Look at your {worst_day} schedule - what's triggering the spike?",
+                f"Add one stress-relief activity to {worst_day}s (walk, music, call a friend)",
+                "Consider moving stressful tasks off your already-hard day",
+            ]
+        elif trend > 0.3:
+            insight_type = InsightType.BEHAVIORAL
+            commentary = f"Your stress is creeping up. Let's get ahead of this before it snowballs."
+            action_steps = [
+                "Identify the new stressor that's entered your life",
+                "Move your body - exercise is the #1 stress reducer",
+                "Talk to someone about what's weighing on you",
+            ]
+        else:
+            insight_type = InsightType.PROGRESS
+            commentary = f"Your stress is manageable at {avg_stress:.1f}/5. You're handling things."
+            action_steps = [
+                "Keep using whatever coping strategies are working",
+                "Build up your stress tolerance with regular exercise",
+            ]
+
+        trend_direction = "up" if trend > 0.2 else "down" if trend < -0.2 else "stable"
+        trend_value = f"{avg_stress:.1f}/5 avg"
+
+        insight = HealthInsight(
+            id=f"stress-{user_id}-{datetime.utcnow().isoformat()}",
+            type=insight_type,
+            title="Your Stress Levels",
+            coach_commentary=commentary,
+            evidence=PatternEvidence(
+                type=PatternType.STRESS_PATTERN,
+                labels=labels,
+                values=values,
+                highlight_index=highlight_index,
+                trend_direction=trend_direction,
+                trend_value=trend_value,
+            ),
+            action_text="Ask Coach",
+            is_new=True,
+            created_at=datetime.utcnow(),
+            action_steps=action_steps,
+        )
+
+        self._upsert_pattern(
+            user_id=user_id,
+            pattern_type=PatternType.STRESS_PATTERN.value,
+            confidence=confidence,
+            pattern_data={
+                "avg_stress": round(avg_stress, 2),
+                "stress_std": round(stress_std, 2),
+                "weekday_avg": weekday_avg,
+                "weekend_avg": weekend_avg,
+                "worst_day": worst_day,
+                "trend": round(trend, 2),
+            },
+            insight_title=insight.title,
+        )
+
+        return {"insight": insight, "confidence": confidence}
 
 
 health_insights_engine = HealthInsightsEngine()
