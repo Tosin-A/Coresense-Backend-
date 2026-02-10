@@ -72,5 +72,8 @@ frozenlist==1.8.0
 multidict==6.7.0
 StrEnum==0.4.15
 
+# Scheduler for background tasks
+apscheduler==3.10.4
+
 # Note: ML packages (torch, transformers, mlx, etc.) are excluded
 # as they're not needed for the API server and are too large for production builds
