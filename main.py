@@ -6,6 +6,9 @@ Run with: PYTHONPATH=. python -m uvicorn backend.main:app --host 0.0.0.0 --port 
 Or use the Procfile/Dockerfile which set PYTHONPATH automatically.
 """
 
+from contextlib import asynccontextmanager
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -17,12 +20,35 @@ from backend.routers.todos import router as todos_router
 # from backend.routers.wellness_router import router as wellness_router  # TODO: Enable after creating wellness services
 from backend.middleware.rate_limit_middleware import RateLimitMiddleware
 from backend.config import get_settings
+from backend.services.scheduler_service import scheduler_service
 
-# Initialize FastAPI app
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan handler.
+    Starts the scheduler on startup and stops it on shutdown.
+    """
+    # Startup
+    logger.info("Starting CoreSense Backend...")
+    scheduler_service.start()
+    logger.info("Background scheduler started for task reminders")
+
+    yield
+
+    # Shutdown
+    logger.info("Shutting down CoreSense Backend...")
+    scheduler_service.stop()
+    logger.info("Background scheduler stopped")
+
+
+# Initialize FastAPI app with lifespan
 app = FastAPI(
     title="CoreSense Backend API",
     description="Backend API for CoreSense - Personal AI Coach",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Configure CORS (allow app to call backend)

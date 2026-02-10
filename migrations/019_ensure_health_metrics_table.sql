@@ -107,6 +107,23 @@ SELECT
     SUM(CASE WHEN metric_type = 'sleep_duration' THEN value ELSE 0 END) as sleep_duration_hours,
     MIN(CASE WHEN metric_type = 'sleep_start' THEN value END) as sleep_start_hour,
     MAX(CASE WHEN metric_type = 'sleep_end' THEN value END) as sleep_end_hour,
+    -- Convert to TIME format for display (sleep_start_time, sleep_end_time)
+    CASE
+        WHEN MIN(CASE WHEN metric_type = 'sleep_start' THEN value END) IS NOT NULL
+        THEN MAKE_TIME(
+            FLOOR(MIN(CASE WHEN metric_type = 'sleep_start' THEN value END))::INT % 24,
+            ((MIN(CASE WHEN metric_type = 'sleep_start' THEN value END) % 1) * 60)::INT,
+            0
+        )
+    END as sleep_start_time,
+    CASE
+        WHEN MAX(CASE WHEN metric_type = 'sleep_end' THEN value END) IS NOT NULL
+        THEN MAKE_TIME(
+            FLOOR(MAX(CASE WHEN metric_type = 'sleep_end' THEN value END))::INT % 24,
+            ((MAX(CASE WHEN metric_type = 'sleep_end' THEN value END) % 1) * 60)::INT,
+            0
+        )
+    END as sleep_end_time,
     -- Activity metrics
     SUM(CASE WHEN metric_type = 'steps' THEN value ELSE 0 END)::INT as steps,
     SUM(CASE WHEN metric_type = 'active_energy' THEN value ELSE 0 END) as active_energy,

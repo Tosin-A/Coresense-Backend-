@@ -131,7 +131,17 @@ async def create_todo(request: CreateTodoRequest, user_id: str = Depends(get_cur
         response = supabase.table('shared_todos').insert(todo_data).execute()
 
         if response.data and len(response.data) > 0:
-            return response.data[0]
+            created_todo = response.data[0]
+
+            # Schedule reminder if enabled and has due date
+            if request.reminder_enabled and request.due_date:
+                try:
+                    await notification_service.schedule_task_reminders_for_user(user_id)
+                    logger.info(f"Scheduled reminder for new task: {created_todo['id']}")
+                except Exception as reminder_error:
+                    logger.warning(f"Failed to schedule reminder for task: {reminder_error}")
+
+            return created_todo
 
         raise DatabaseError("Failed to create todo")
 
@@ -190,6 +200,14 @@ async def create_coach_todo(request: CreateCoachTodoRequest, user_id: str = Depe
             except Exception as notif_error:
                 # Don't fail the request if notification fails
                 logger.warning(f"Failed to send coach task notification: {notif_error}")
+
+            # Schedule reminder if enabled and has due date
+            if request.reminder_enabled and request.due_date:
+                try:
+                    await notification_service.schedule_task_reminders_for_user(user_id)
+                    logger.info(f"Scheduled reminder for coach task: {created_todo['id']}")
+                except Exception as reminder_error:
+                    logger.warning(f"Failed to schedule reminder for coach task: {reminder_error}")
 
             return created_todo
 
@@ -293,7 +311,17 @@ async def update_todo(
         )
 
         if response.data and len(response.data) > 0:
-            return response.data[0]
+            updated_todo = response.data[0]
+
+            # Re-schedule reminders if reminder settings changed
+            if request.reminder_enabled is not None or request.due_date is not None or request.due_time is not None:
+                try:
+                    await notification_service.schedule_task_reminders_for_user(user_id)
+                    logger.info(f"Re-scheduled reminders for user after task update: {todo_id}")
+                except Exception as reminder_error:
+                    logger.warning(f"Failed to re-schedule reminders: {reminder_error}")
+
+            return updated_todo
 
         raise NotFoundError("Todo not found")
 

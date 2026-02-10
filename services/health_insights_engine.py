@@ -200,7 +200,7 @@ class HealthInsightsEngine:
                 self.supabase.table("health_metrics_daily")
                 .select(
                     "date,sleep_duration_hours,sleep_start_hour,sleep_end_hour,"
-                    "sleep_start_time,sleep_end_time,steps,active_energy,"
+                    "steps,active_energy,"
                     "avg_heart_rate,resting_heart_rate,data_completeness"
                 )
                 .eq("user_id", user_id)

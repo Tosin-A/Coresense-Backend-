@@ -95,3 +95,4 @@ xxhash==3.6.0
 yarl==1.22.0
 pytest==8.3.4
 pytest-asyncio==0.24.0
+apscheduler==3.10.4
