@@ -887,10 +887,8 @@ class HealthInsightsEngine:
     def _last_7_days_series(
         self, rows: List[Dict], field: str
     ) -> Tuple[List[str], List[float]]:
-        if rows:
-            last_date = self._parse_date(rows[-1].get("date")) or date.today()
-        else:
-            last_date = date.today()
+        # Always anchor to today so the chart shows the most recent 7 days
+        last_date = date.today()
 
         series_dates = [
             last_date - timedelta(days=delta) for delta in reversed(range(7))
