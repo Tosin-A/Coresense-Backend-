@@ -201,7 +201,7 @@ class UnifiedCoachingService:
                             },
                             "coach_reasoning": {
                                 "type": "string",
-                                "description": "Brief reason why this task was created from the conversation."
+                                "description": "Write in first person from the user's perspective (e.g. \"I'm working on robotics at 4\", \"I'm going to the gym at 6am\"). Keep it to one short sentence."
                             }
                         },
                         "required": ["user_id", "title"]
