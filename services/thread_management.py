@@ -256,7 +256,7 @@ class ThreadManagementService:
             )
 
             # Wait for completion with timeout
-            return await self._wait_for_completion(run.id, thread_id)
+            return await self._wait_for_completion(run.id, thread_id, user_id)
 
         except asyncio.TimeoutError:
             logger.error(f"Timeout waiting for assistant run to complete for thread {thread_id}")
@@ -382,7 +382,7 @@ class ThreadManagementService:
         
         return instructions.get(response_type, "Provide helpful accountability coaching.")
     
-    async def _wait_for_completion(self, run_id: str, thread_id: str) -> Dict[str, Any]:
+    async def _wait_for_completion(self, run_id: str, thread_id: str, user_id: str = None) -> Dict[str, Any]:
         """Wait for run completion and handle function calls with timeout"""
         if not self.client:
             raise Exception("OpenAI client not available")
@@ -415,13 +415,13 @@ class ThreadManagementService:
                 result["function_calls"] = executed_functions
                 return result
             elif run.status == "requires_action":
-                await self._handle_function_calls(run, thread_id, executed_functions)
+                await self._handle_function_calls(run, thread_id, executed_functions, user_id)
             elif run.status in ["failed", "cancelled", "expired"]:
                 raise Exception(f"Run failed: {run.status}")
 
             await self._sleep(1)
     
-    async def _handle_function_calls(self, run, thread_id: str, executed_functions: List[Dict[str, Any]] = None):
+    async def _handle_function_calls(self, run, thread_id: str, executed_functions: List[Dict[str, Any]] = None, user_id: str = None):
         """Handle function calls from assistant"""
         if not self.client:
             return
@@ -432,6 +432,10 @@ class ThreadManagementService:
             for tool_call in run.required_action.submit_tool_outputs.tool_calls:
                 function_name = tool_call.function.name
                 arguments = json.loads(tool_call.function.arguments)
+
+                # Override user_id with the real one (assistant may pass a placeholder)
+                if user_id and "user_id" in arguments:
+                    arguments["user_id"] = user_id
 
                 # Execute function
                 if function_name == "get_user_memory":
