@@ -162,9 +162,54 @@ class UnifiedCoachingService:
                         "required": ["user_id", "recent_messages"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_user_task",
+                    "description": (
+                        "Create a task on the user's to-do list. Call this ONLY when the user makes "
+                        "a clear, specific commitment to do something actionable. Examples: 'I'll go to "
+                        "the gym tomorrow at 6am', 'I'm going to read for 30 minutes tonight', 'I need "
+                        "to finish my report by Friday'. Do NOT call this for vague intentions like "
+                        "'I should exercise more' or 'I want to be healthier'. The commitment must have "
+                        "a specific action. If the user mentions a timeframe, include it as due_date."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {
+                                "type": "string",
+                                "description": "The user's ID"
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Short, actionable task title under 60 characters"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional additional context about the task"
+                            },
+                            "priority": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high"],
+                                "description": "Task priority. Default to medium."
+                            },
+                            "due_date": {
+                                "type": "string",
+                                "description": "ISO date (YYYY-MM-DD) if the user mentioned a specific day."
+                            },
+                            "coach_reasoning": {
+                                "type": "string",
+                                "description": "Brief reason why this task was created from the conversation."
+                            }
+                        },
+                        "required": ["user_id", "title"]
+                    }
+                }
             }
         ]
-    
+
     async def chat(
         self, 
         user_id: str, 

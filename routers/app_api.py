@@ -1514,6 +1514,12 @@ async def sync_health_data(
                 existing.value += metric.value
             elif metric.metric_type == "sleep_duration":
                 existing.value = max(existing.value, metric.value)
+            elif metric.metric_type == "sleep_start":
+                # Use minimum for sleep start (earliest bedtime)
+                existing.value = min(existing.value, metric.value)
+            elif metric.metric_type == "sleep_end":
+                # Use maximum for sleep end (latest wake time)
+                existing.value = max(existing.value, metric.value)
             else:
                 merged[key] = metric
 

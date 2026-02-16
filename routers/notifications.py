@@ -9,7 +9,12 @@ from typing import List, Dict, Any, Optional
 import logging
 from datetime import datetime, timezone
 
-from backend.services.notification_service import notification_service, WaitingMessage
+from backend.services.notification_service import (
+    notification_service,
+    WaitingMessage,
+    NotificationPayload,
+    NotificationType,
+)
 from backend.database.supabase_client import get_supabase_client
 from backend.utils.exceptions import DatabaseError, NotFoundError
 from backend.middleware.auth_helper import get_current_user_id
@@ -509,3 +514,174 @@ async def test_coach_message(
     except Exception as e:
         logger.error(f"Error sending test coach message: {e}")
         raise DatabaseError("Failed to send test message", original_error=e)
+
+
+@router.post("/test-all-personalized")
+async def test_all_personalized_notifications(
+    user_id: str = Depends(get_current_user_id)
+):
+    """
+    Test endpoint to send all notification types with REAL personalized data.
+    Uses actual tasks, streaks, and insights from the user's account.
+    """
+    try:
+        supabase = get_supabase_client()
+        results = {
+            "task_reminder": False,
+            "overdue_nudge": False,
+            "streak_alert": False,
+            "insight": False,
+            "coach_message": False,
+        }
+
+        # Get user's profile for personalization
+        profile_resp = supabase.table("users").select("username").eq("id", user_id).execute()
+        username = profile_resp.data[0].get("username", "there") if profile_resp.data else "there"
+
+        # 1. Task Reminder - Get user's next upcoming task
+        tasks_resp = supabase.table("shared_todos").select(
+            "id, title, due_date, due_time"
+        ).eq("user_id", user_id).in_(
+            "status", ["pending", "in_progress"]
+        ).order("due_date", asc=True).limit(1).execute()
+
+        if tasks_resp.data:
+            task = tasks_resp.data[0]
+            results["task_reminder"] = await notification_service.send_task_reminder(
+                user_id=user_id,
+                task_id=task["id"],
+                task_title=task["title"],
+                minutes_until_due=30
+            )
+
+        # 2. Overdue Nudge - Get overdue tasks
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date().isoformat()
+        overdue_resp = supabase.table("shared_todos").select(
+            "id, title, due_date"
+        ).eq("user_id", user_id).lt("due_date", today).in_(
+            "status", ["pending", "in_progress"]
+        ).limit(3).execute()
+
+        if overdue_resp.data:
+            results["overdue_nudge"] = await notification_service.send_task_overdue_nudge(
+                user_id=user_id,
+                overdue_tasks=overdue_resp.data
+            )
+        else:
+            # Send a generic nudge if no overdue tasks
+            await notification_service.send_notification(
+                notification_service.NotificationPayload(
+                    user_id=user_id,
+                    type=notification_service.NotificationType.COACH_NUDGE,
+                    title="Cora",
+                    body=f"Hey {username}! How's your day going? Any tasks you want to tackle?",
+                    data={"screen": "Tasks"}
+                )
+            )
+            results["overdue_nudge"] = True
+
+        # 3. Streak Alert - Get user's current streak
+        streak_resp = supabase.table("user_streaks").select(
+            "current_streak"
+        ).eq("user_id", user_id).execute()
+
+        current_streak = streak_resp.data[0].get("current_streak", 0) if streak_resp.data else 0
+        if current_streak > 0:
+            results["streak_alert"] = await notification_service.send_streak_alert(
+                user_id=user_id,
+                current_streak=current_streak
+            )
+        else:
+            # Encourage starting a streak
+            await notification_service.send_notification(
+                notification_service.NotificationPayload(
+                    user_id=user_id,
+                    type=notification_service.NotificationType.STREAK_ALERT,
+                    title="Start Your Streak!",
+                    body=f"Hey {username}, check in today to start building your streak!",
+                    data={"screen": "Home"}
+                )
+            )
+            results["streak_alert"] = True
+
+        # 4. Insight Notification - Get latest insight
+        insight_resp = supabase.table("insights").select(
+            "id, title"
+        ).eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
+
+        if insight_resp.data:
+            insight = insight_resp.data[0]
+            results["insight"] = await notification_service.send_insight_notification(
+                user_id=user_id,
+                insight_id=insight["id"],
+                insight_title=insight["title"]
+            )
+        else:
+            # Send a generic insight teaser
+            await notification_service.send_notification(
+                notification_service.NotificationPayload(
+                    user_id=user_id,
+                    type=notification_service.NotificationType.INSIGHT,
+                    title="New Insight",
+                    body="Keep tracking your tasks and we'll discover patterns in your productivity!",
+                    data={"screen": "Insights"}
+                )
+            )
+            results["insight"] = True
+
+        # 5. Coach Message - Personalized check-in
+        results["coach_message"] = await notification_service.send_coach_checkin(
+            user_id=user_id,
+            message=f"Hey {username}! Just checking in. How are you feeling about today's goals?",
+            priority="normal"
+        )
+
+        return {
+            "success": True,
+            "results": results,
+            "message": "Sent personalized notifications using your real data"
+        }
+
+    except Exception as e:
+        logger.error(f"Error sending personalized test notifications: {e}")
+        raise DatabaseError("Failed to send personalized notifications", original_error=e)
+
+
+@router.post("/trigger-scheduled-jobs")
+async def trigger_scheduled_jobs(
+    user_id: str = Depends(get_current_user_id)
+):
+    """
+    Manually trigger all scheduled notification jobs for testing.
+    This runs the same jobs that the scheduler runs automatically.
+    """
+    try:
+        results = {
+            "task_reminders_scheduled": 0,
+            "notifications_processed": 0,
+            "overdue_nudges_sent": 0,
+            "streak_alerts_sent": 0,
+        }
+
+        # 1. Schedule task reminders for this user
+        results["task_reminders_scheduled"] = await notification_service.schedule_task_reminders_for_user(user_id)
+
+        # 2. Process any pending scheduled notifications
+        results["notifications_processed"] = await notification_service.process_scheduled_notifications()
+
+        # 3. Check and send overdue task nudges
+        results["overdue_nudges_sent"] = await notification_service.check_and_send_overdue_task_nudges()
+
+        # 4. Check and send streak alerts
+        results["streak_alerts_sent"] = await notification_service.check_and_send_streak_alerts()
+
+        return {
+            "success": True,
+            "results": results,
+            "message": "Triggered all scheduled jobs"
+        }
+
+    except Exception as e:
+        logger.error(f"Error triggering scheduled jobs: {e}")
+        raise DatabaseError("Failed to trigger scheduled jobs", original_error=e)
