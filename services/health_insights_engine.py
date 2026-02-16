@@ -134,18 +134,18 @@ class HealthInsightsEngine:
             insights = insights[:5]
 
             has_risk = any(i.type == InsightType.RISK for i in insights)
-            has_checkin_insights = any(
-                i.evidence.type in (PatternType.MOOD_PATTERN, PatternType.CHECKIN_ENERGY_PATTERN, PatternType.STRESS_PATTERN)
-                for i in insights
-            )
-            data_source = "your health and check-in data" if has_checkin_insights else "your health data"
-            coach_summary = (
-                f"Looked at {data_source} from the last week. "
-                f"Found {len(insights)} pattern{'s' if len(insights) != 1 else ''}"
-                f"{' — some need attention' if has_risk else ' worth knowing about'}."
-                if insights
-                else None
-            )
+            count = len(insights)
+
+            if not insights:
+                coach_summary = None
+            elif count == 1 and has_risk:
+                coach_summary = "Went through your data from this week. One thing stood out that you should look at."
+            elif count == 1:
+                coach_summary = "Had a look at your week. Spotted something worth knowing about."
+            elif has_risk:
+                coach_summary = f"Checked your data from the past week. {count} patterns came up and a couple need your attention."
+            else:
+                coach_summary = f"Looked through your week. Found {count} things worth flagging, nothing mad though."
 
             patterns = [
                 {
