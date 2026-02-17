@@ -401,23 +401,23 @@ class HealthInsightsEngine:
             worst_note = f" {worst_day_name} was your lowest at {worst_value:.1f}h." if worst_day_name else ""
             if trend < -0.3:
                 commentary = (
-                    f"Averaging {avg_sleep:.1f} hours and trending down.{worst_note} "
-                    f"Sleep debt compounds fast."
+                    f"You're clocking {avg_sleep:.1f} hours and it's getting worse.{worst_note} "
+                    f"Sleep debt stacks up proper quick."
                 )
             else:
                 commentary = (
-                    f"Averaging {avg_sleep:.1f} hours — below the 7h baseline.{worst_note}"
+                    f"Only getting {avg_sleep:.1f} hours on average — that's under the 7h mark.{worst_note}"
                 )
             action_steps = [
                 "Set a hard bedtime alarm 8 hours before your wake time",
                 "No screens 30 minutes before bed",
-                "If you can, schedule a 20-minute power nap between 1-3 PM",
+                "If you can, grab a 20 min power nap between 1 and 3 PM",
             ]
         elif avg_sleep < 7.2:
             insight_type = InsightType.BEHAVIORAL
-            regularity_note = f" Your sleep varied by +/-{sleep_std:.1f}h." if sleep_std > 0.5 else ""
+            regularity_note = f" Your sleep varied by about {sleep_std:.1f}h night to night." if sleep_std > 0.5 else ""
             commentary = (
-                f"Averaging {avg_sleep:.1f} hours — close to the edge of sleep debt.{regularity_note}"
+                f"Sitting at {avg_sleep:.1f} hours — right on the edge of sleep debt.{regularity_note}"
             )
             action_steps = [
                 "Move your bedtime back by 15 minutes this week",
@@ -427,12 +427,12 @@ class HealthInsightsEngine:
         else:
             insight_type = InsightType.PROGRESS
             if trend > 0.3:
-                commentary = f"Averaging {avg_sleep:.1f} hours and improving. Your sleep is trending in the right direction."
+                commentary = f"Clocking {avg_sleep:.1f} hours and it's getting better. Sleep is moving in the right direction."
             else:
-                commentary = f"Averaging {avg_sleep:.1f} hours with {sleep_std:.1f}h variation. Solid base."
+                commentary = f"Getting {avg_sleep:.1f} hours with {sleep_std:.1f}h variation. Solid foundation that."
             action_steps = [
-                "Keep your sleep schedule consistent day-to-day",
-                "Notice how sleep quality affects next-day energy and focus",
+                "Keep your sleep schedule consistent from one day to the next",
+                "Notice how your sleep affects energy and focus the next day",
             ]
 
         trend_direction = "down" if trend < -0.2 else "up" if trend > 0.2 else "stable"
@@ -509,12 +509,12 @@ class HealthInsightsEngine:
         # Productive window: wake + 1h to wake + 4h (cortisol peak)
         peak_start = (int(avg_wake) + 1) % 24
         peak_end = (int(avg_wake) + 4) % 24
-        peak_window = f"{self._hour_label(peak_start)}-{self._hour_label(peak_end)}"
+        peak_window = f"{self._hour_label(peak_start)} to {self._hour_label(peak_end)}"
 
         if is_morning_person:
             commentary = (
-                f"Early riser — up by {wake_label}, down by {bed_label}. "
-                f"Front-load deep work in {peak_window}."
+                f"You're up early — {wake_label} rise, {bed_label} lights out. "
+                f"Get the hard stuff done in {peak_window}."
             )
             insight_type = InsightType.PROGRESS
             action_steps = [
@@ -524,19 +524,19 @@ class HealthInsightsEngine:
             ]
         elif is_night_owl:
             commentary = (
-                f"You're running a late schedule — up around {wake_label}, down around {bed_label}. "
+                f"You're on a late schedule — up around {wake_label}, crashing around {bed_label}. "
                 f"Your sharpest window is {peak_window}."
             )
             insight_type = InsightType.BEHAVIORAL
             action_steps = [
                 f"Block {peak_window} for deep or creative work",
                 "Use the first hour after waking for routine tasks, not decisions",
-                "Protect your sleep — consistency matters more than early rising",
+                "Protect your sleep — consistency matters more than waking up early",
             ]
         else:
             commentary = (
-                f"Up around {wake_label}, asleep by {bed_label}. "
-                f"{peak_window} is your focus window."
+                f"Up around {wake_label}, out by {bed_label}. "
+                f"{peak_window} is when you're sharpest."
             )
             insight_type = InsightType.BEHAVIORAL
             action_steps = [
@@ -646,20 +646,20 @@ class HealthInsightsEngine:
             if best_day and worst_day:
                 day_context = f" {best_day} hit {int(max_steps):,}, {worst_day} dropped to {int(min_steps):,}."
             commentary = (
-                f"Your movement swings wildly.{day_context} "
-                f"Consistency matters more than peaks."
+                f"Your movement is all over the shop.{day_context} "
+                f"Being consistent matters way more than big days."
             )
             insight_type = InsightType.RISK
             action_steps = [
                 f"Set a minimum daily floor of {int(min_steps + (avg_steps - min_steps) * 0.3):,} steps",
-                "On low-activity days, take a 15-minute walk after lunch",
+                "On quiet days, take a 15 min walk after lunch",
                 "Track what kills your movement on zero days",
             ]
         elif cv >= 0.35:
             commentary = (
-                f"Averaging {int(avg_steps):,} steps with swings between "
+                f"Doing about {int(avg_steps):,} steps but swinging between "
                 f"{int(min_steps):,} and {int(max_steps):,}. "
-                f"A consistent daily floor helps more than big days."
+                f"A steady daily minimum does more than smashing it once."
             )
             insight_type = InsightType.BEHAVIORAL
             action_steps = [
@@ -669,12 +669,12 @@ class HealthInsightsEngine:
         else:
             best_note = f" {best_day} was your strongest at {int(max_steps):,}." if best_day else ""
             commentary = (
-                f"Averaging {int(avg_steps):,} steps with steady consistency.{best_note}"
+                f"Putting in about {int(avg_steps):,} steps and staying proper consistent.{best_note}"
             )
             insight_type = InsightType.PROGRESS
             action_steps = [
                 f"You're consistent — try bumping your target to {int(avg_steps * 1.1):,} steps",
-                "Add one 20-minute walk on your best energy day",
+                "Add one 20 min walk on your best energy day",
             ]
 
         insight = HealthInsight(
@@ -772,8 +772,8 @@ class HealthInsightsEngine:
         if len(inconsistent_metrics) > 1:
             insight_type = InsightType.RISK
             commentary = (
-                f"Your week is all over the place — {' and '.join(parts)}. "
-                f"Irregular rhythms compound into fatigue."
+                f"Your week was all over the gaff — {' and '.join(parts)}. "
+                f"When nothing's consistent it catches up to you."
             )
             action_steps = [
                 "Pick a fixed wake time and stick to it every day this week",
@@ -782,10 +782,10 @@ class HealthInsightsEngine:
             ]
         else:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Your {inconsistent_metrics[0]} was inconsistent this week — {parts[0]}."
+            commentary = f"Your {inconsistent_metrics[0]} was a bit all over it this week — {parts[0]}."
             if "sleep timing" in inconsistent_metrics:
                 action_steps = [
-                    "Try keeping your bedtime within a 1-hour window each night",
+                    "Try keeping your bedtime within one hour each night",
                     "A consistent sleep schedule helps your body clock",
                 ]
             else:
@@ -947,7 +947,7 @@ class HealthInsightsEngine:
 
     def _format_hour_window(self, start_hour: int, window: int) -> str:
         end_hour = (start_hour + window) % 24
-        return f"{self._hour_label(start_hour)}-{self._hour_label(end_hour)}"
+        return f"{self._hour_label(start_hour)} to {self._hour_label(end_hour)}"
 
     def _hour_label(self, hour: int) -> str:
         suffix = "am" if hour < 12 else "pm"
@@ -1138,23 +1138,23 @@ class HealthInsightsEngine:
         # Generate insight based on patterns
         if avg_mood < 2.5:
             insight_type = InsightType.RISK
-            commentary = f"Your mood has been low lately, averaging {avg_mood:.1f}/5. Let's talk about what's going on."
+            commentary = f"Your mood's been low lately, sitting at {avg_mood:.1f}/5. Let's chat about what's going on."
             action_steps = [
                 "Try 10 minutes of sunlight within an hour of waking",
-                "Move your body for 20 minutes today - even a walk counts",
+                "Move your body for 20 minutes today, even a walk counts",
                 "Reach out to someone you trust and tell them how you're feeling",
             ]
         elif worst_day and worst_avg and best_avg and (best_avg - worst_avg) > 0.8:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Your mood dips on {worst_day}s ({worst_avg:.1f}/5) compared to {best_day}s ({best_avg:.1f}/5). What's different about those days?"
+            commentary = f"Your mood drops on {worst_day}s ({worst_avg:.1f}/5) but picks up on {best_day}s ({best_avg:.1f}/5). What's different about those days?"
             action_steps = [
-                f"Plan something enjoyable for {worst_day}s - even small rewards help",
+                f"Plan something enjoyable for {worst_day}s, even small rewards help",
                 f"Notice what's draining you on {worst_day}s vs energizing you on {best_day}s",
                 "Consider if work or obligations cluster on your low days",
             ]
         elif trend < -0.3:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Your mood has been trending down this week. Time to intervene before it spirals."
+            commentary = f"Your mood's been sliding this week. Worth doing something about it before it gets worse."
             action_steps = [
                 "Pick one thing that usually lifts your mood and do it today",
                 "Get to bed 30 minutes earlier tonight",
@@ -1162,10 +1162,10 @@ class HealthInsightsEngine:
             ]
         else:
             insight_type = InsightType.PROGRESS
-            commentary = f"Your mood is holding steady around {avg_mood:.1f}/5. Keep doing what you're doing."
+            commentary = f"Your mood's been steady around {avg_mood:.1f}/5. Whatever you're doing, keep at it."
             action_steps = [
                 "Notice what's working and keep it in your routine",
-                "Small wins compound - celebrate consistency",
+                "Small wins compound, celebrate consistency",
             ]
 
         trend_direction = "down" if trend < -0.2 else "up" if trend > 0.2 else "stable"
@@ -1239,40 +1239,40 @@ class HealthInsightsEngine:
         if avg_energy < 2.5:
             insight_type = InsightType.RISK
             if sleep_correlation and sleep_correlation < 6.5:
-                commentary = f"Your energy is low ({avg_energy:.1f}/5) and your sleep averaging {sleep_correlation:.1f}h might be why."
+                commentary = f"Your energy's proper low at {avg_energy:.1f}/5 and averaging {sleep_correlation:.1f}h of sleep is probably why."
                 action_steps = [
-                    "Get 7+ hours tonight - make it non-negotiable",
+                    "Get 7+ hours tonight, no excuses",
                     "Cut caffeine after 2 PM",
-                    "Consider a 20-minute power nap between 1-3 PM",
+                    "Try a 20 min power nap between 1 and 3 PM",
                 ]
             else:
-                commentary = f"Your energy has been dragging at {avg_energy:.1f}/5. Something's draining your battery."
+                commentary = f"Your energy's been dragging at {avg_energy:.1f}/5. Something's draining you."
                 action_steps = [
-                    "Hydrate - dehydration tanks energy. Aim for 8 glasses today",
-                    "Get outside for 15 minutes - natural light resets your system",
+                    "Hydrate, dehydration tanks energy. Aim for 8 glasses today",
+                    "Get outside for 15 minutes, natural light resets your system",
                     "Check if you're eating enough protein and complex carbs",
                 ]
         elif worst_day and best_day and best_avg and worst_avg and (best_avg - worst_avg) > 0.8:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Your energy tanks on {worst_day}s ({worst_avg:.1f}/5). {best_day}s are your power days ({best_avg:.1f}/5)."
+            commentary = f"Your energy tanks on {worst_day}s ({worst_avg:.1f}/5). {best_day}s are when you're buzzing ({best_avg:.1f}/5)."
             action_steps = [
                 f"Schedule demanding tasks on {best_day}s when possible",
-                f"Protect {worst_day}s - lighter work, no major decisions",
-                "Track what you eat/drink on low days vs high days",
+                f"Protect {worst_day}s, lighter work, no major decisions",
+                "Track what you eat and drink on low days vs high days",
             ]
         elif trend < -0.3:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Your energy is on a downward slide. Time to troubleshoot before you hit empty."
+            commentary = f"Your energy's been dropping off. Worth sorting it before you hit empty."
             action_steps = [
-                "Audit your sleep this week - are you actually resting?",
+                "Audit your sleep this week, are you actually resting?",
                 "Look for energy vampires: stress, poor food, dehydration",
-                "Try a 10-minute walk after lunch today",
+                "Try a 10 min walk after lunch today",
             ]
         else:
             insight_type = InsightType.PROGRESS
-            commentary = f"Your energy is stable at {avg_energy:.1f}/5. You're managing your battery well."
+            commentary = f"Your energy's steady at {avg_energy:.1f}/5. You're managing it well."
             action_steps = [
-                "Keep tracking - you're building self-awareness",
+                "Keep tracking, you're building proper awareness",
                 "Note what boosts your energy so you can replicate it",
             ]
 
@@ -1344,39 +1344,39 @@ class HealthInsightsEngine:
         # Generate insight based on patterns
         if avg_stress > 3.5:
             insight_type = InsightType.RISK
-            commentary = f"Your stress is running hot at {avg_stress:.1f}/5. That's not sustainable."
+            commentary = f"Your stress is mad high at {avg_stress:.1f}/5. That's not gonna last."
             action_steps = [
-                "Take 5 minutes right now to do box breathing (4-4-4-4)",
-                "Write down the top 3 things stressing you - get them out of your head",
+                "Take 5 minutes right now to do box breathing (4 seconds each)",
+                "Write down the top 3 things stressing you, get them out of your head",
                 "Say no to one thing today. Just one.",
             ]
         elif weekday_avg and weekend_avg and weekday_avg > weekend_avg + 0.5:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Weekdays stress you out ({weekday_avg:.1f}/5) way more than weekends ({weekend_avg:.1f}/5). Work is the culprit."
+            commentary = f"Weekdays are stressing you out ({weekday_avg:.1f}/5) way more than weekends ({weekend_avg:.1f}/5). Work's the one doing it."
             action_steps = [
-                "Build a 10-minute decompression ritual for end of workday",
+                "Build a 10 min wind down ritual for end of workday",
                 "Block 'focus time' on your calendar to reduce meeting overwhelm",
-                "Start Monday with your hardest task - don't let it loom all week",
+                "Start Monday with your hardest task, don't let it loom all week",
             ]
         elif worst_day and worst_avg and best_avg and (worst_avg - best_avg) > 1.0:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Stress spikes on {worst_day}s ({worst_avg:.1f}/5). What's happening that day?"
+            commentary = f"Stress spikes on {worst_day}s ({worst_avg:.1f}/5). What's going on that day?"
             action_steps = [
-                f"Look at your {worst_day} schedule - what's triggering the spike?",
-                f"Add one stress-relief activity to {worst_day}s (walk, music, call a friend)",
-                "Consider moving stressful tasks off your already-hard day",
+                f"Look at your {worst_day} schedule, what's triggering the spike?",
+                f"Add one thing that calms you down to {worst_day}s (walk, music, call a friend)",
+                "Consider moving stressful tasks off your toughest day",
             ]
         elif trend > 0.3:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Your stress is creeping up. Let's get ahead of this before it snowballs."
+            commentary = f"Your stress is creeping up. Best to get on top of it before it gets out of hand."
             action_steps = [
                 "Identify the new stressor that's entered your life",
-                "Move your body - exercise is the #1 stress reducer",
+                "Move your body, exercise is the number one stress reducer",
                 "Talk to someone about what's weighing on you",
             ]
         else:
             insight_type = InsightType.PROGRESS
-            commentary = f"Your stress is manageable at {avg_stress:.1f}/5. You're handling things."
+            commentary = f"Your stress is calm at {avg_stress:.1f}/5. You're handling it."
             action_steps = [
                 "Keep using whatever coping strategies are working",
                 "Build up your stress tolerance with regular exercise",
