@@ -331,6 +331,8 @@ class HealthInsightsEngine:
                 if m_row.get("avg_sleep_hours") is not None and float(m_row["avg_sleep_hours"]) > 0:
                     checkin_sleep_by_date[m_row["date"]] = float(m_row["avg_sleep_hours"])
 
+        logger.info(f"[SleepAnalysis] health_data rows: {len(health_data)}, checkin_sleep dates: {list(checkin_sleep_by_date.keys())}")
+
         # Merge: replace zero/missing HealthKit sleep with check-in values
         merged_data = []
         for r in health_data:
@@ -359,7 +361,10 @@ class HealthInsightsEngine:
         # Filter to rows with actual sleep values for analysis
         sleep_rows = [r for r in merged_data if float(r.get("sleep_duration_hours") or 0) > 0]
 
+        logger.info(f"[SleepAnalysis] After merge: {len(merged_data)} total rows, {len(sleep_rows)} with sleep > 0")
+
         if len(sleep_rows) < 2:
+            logger.info(f"[SleepAnalysis] Not enough sleep data ({len(sleep_rows)} rows), skipping")
             return None
 
         sleep_values = [float(r["sleep_duration_hours"]) for r in sleep_rows]
@@ -368,8 +373,11 @@ class HealthInsightsEngine:
 
         weekday_avg, weekend_avg = self._weekday_weekend_avgs(sleep_rows, "sleep_duration_hours")
 
-        pattern_strength = min(1.0, abs(avg_sleep - 7.0) / 2.0)
+        # Floor at 0.4 so the card still shows when sleep is near 7h (healthy)
+        pattern_strength = max(0.4, min(1.0, abs(avg_sleep - 7.0) / 2.0))
         confidence = self._confidence(len(sleep_rows), pattern_strength)
+
+        logger.info(f"[SleepAnalysis] avg={avg_sleep:.1f}h, strength={pattern_strength:.2f}, confidence={confidence:.2f}, rows={len(sleep_rows)}")
 
         # Use merged data for the chart so check-in values appear instead of zeros
         labels, values = self._last_7_days_series(merged_data, "sleep_duration_hours")
