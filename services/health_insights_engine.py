@@ -406,7 +406,7 @@ class HealthInsightsEngine:
                 )
             else:
                 commentary = (
-                    f"Only getting {avg_sleep:.1f} hours on average — that's under the 7h mark.{worst_note}"
+                    f"Only getting {avg_sleep:.1f} hours on average, that's under the 7h mark.{worst_note}"
                 )
             action_steps = [
                 "Set a hard bedtime alarm 8 hours before your wake time",
@@ -417,12 +417,12 @@ class HealthInsightsEngine:
             insight_type = InsightType.BEHAVIORAL
             regularity_note = f" Your sleep varied by about {sleep_std:.1f}h night to night." if sleep_std > 0.5 else ""
             commentary = (
-                f"Sitting at {avg_sleep:.1f} hours — right on the edge of sleep debt.{regularity_note}"
+                f"Sitting at {avg_sleep:.1f} hours, right on the edge of sleep debt.{regularity_note}"
             )
             action_steps = [
                 "Move your bedtime back by 15 minutes this week",
                 "Reduce caffeine after 2 PM",
-                "Track what keeps you up — phone, racing thoughts, or environment",
+                "Track what keeps you up. Phone, racing thoughts, or environment",
             ]
         else:
             insight_type = InsightType.PROGRESS
@@ -513,7 +513,7 @@ class HealthInsightsEngine:
 
         if is_morning_person:
             commentary = (
-                f"You're up early — {wake_label} rise, {bed_label} lights out. "
+                f"You're up early, {wake_label} rise, {bed_label} lights out. "
                 f"Get the hard stuff done in {peak_window}."
             )
             insight_type = InsightType.PROGRESS
@@ -524,14 +524,14 @@ class HealthInsightsEngine:
             ]
         elif is_night_owl:
             commentary = (
-                f"You're on a late schedule — up around {wake_label}, crashing around {bed_label}. "
+                f"You're on a late schedule, up around {wake_label}, crashing around {bed_label}. "
                 f"Your sharpest window is {peak_window}."
             )
             insight_type = InsightType.BEHAVIORAL
             action_steps = [
                 f"Block {peak_window} for deep or creative work",
                 "Use the first hour after waking for routine tasks, not decisions",
-                "Protect your sleep — consistency matters more than waking up early",
+                "Protect your sleep. Consistency matters more than waking up early",
             ]
         else:
             commentary = (
@@ -673,7 +673,7 @@ class HealthInsightsEngine:
             )
             insight_type = InsightType.PROGRESS
             action_steps = [
-                f"You're consistent — try bumping your target to {int(avg_steps * 1.1):,} steps",
+                f"You're consistent, try bumping your target to {int(avg_steps * 1.1):,} steps",
                 "Add one 20 min walk on your best energy day",
             ]
 
@@ -772,7 +772,7 @@ class HealthInsightsEngine:
         if len(inconsistent_metrics) > 1:
             insight_type = InsightType.RISK
             commentary = (
-                f"Your week was all over the gaff — {' and '.join(parts)}. "
+                f"Your week was all over the gaff, {' and '.join(parts)}. "
                 f"When nothing's consistent it catches up to you."
             )
             action_steps = [
@@ -782,7 +782,7 @@ class HealthInsightsEngine:
             ]
         else:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Your {inconsistent_metrics[0]} was a bit all over it this week — {parts[0]}."
+            commentary = f"Your {inconsistent_metrics[0]} was a bit all over it this week, {parts[0]}."
             if "sleep timing" in inconsistent_metrics:
                 action_steps = [
                     "Try keeping your bedtime within one hour each night",
