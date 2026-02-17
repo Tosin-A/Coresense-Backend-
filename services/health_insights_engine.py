@@ -125,13 +125,16 @@ class HealthInsightsEngine:
                     logger.info(f"[HealthInsights] Pattern {pattern_names[i]} generated with confidence {result['confidence']:.2f}")
                     insights.append(result["insight"])
 
-            type_priority = {
-                InsightType.RISK: 0,
-                InsightType.BEHAVIORAL: 1,
-                InsightType.PROGRESS: 2,
+            pattern_order = {
+                PatternType.SLEEP_PATTERN: 0,
+                PatternType.ACTIVITY_CONSISTENCY: 1,
+                PatternType.ENERGY_WINDOWS: 2,
+                PatternType.MOOD_PATTERN: 3,
+                PatternType.CHECKIN_ENERGY_PATTERN: 4,
+                PatternType.STRESS_PATTERN: 5,
+                PatternType.CONSISTENCY: 6,
             }
-            insights.sort(key=lambda x: type_priority.get(x.type, 99))
-            insights = insights[:5]
+            insights.sort(key=lambda x: pattern_order.get(x.evidence.type, 99))
 
             has_risk = any(i.type == InsightType.RISK for i in insights)
             count = len(insights)
@@ -480,34 +483,38 @@ class HealthInsightsEngine:
         if len(sleep_rows) < 2:  # Lowered from 4 to show energy insights sooner
             return None
 
-        bedtimes = [float(r["sleep_start_hour"]) for r in sleep_rows]
+        # Normalize bedtimes: hours 0-6 are post-midnight, treat as 24-30
+        raw_bedtimes = [float(r["sleep_start_hour"]) for r in sleep_rows]
+        normalized_bedtimes = [h + 24 if h <= 6 else h for h in raw_bedtimes]
         wake_times = [float(r["sleep_end_hour"]) for r in sleep_rows]
 
-        avg_bedtime = sum(bedtimes) / len(bedtimes)
+        avg_bedtime_norm = sum(normalized_bedtimes) / len(normalized_bedtimes)
+        avg_bedtime = avg_bedtime_norm % 24
         avg_wake = sum(wake_times) / len(wake_times)
 
-        # Determine active window: wake time to bedtime
-        active_hours = avg_bedtime - avg_wake if avg_bedtime > avg_wake else (24 - avg_wake + avg_bedtime)
+        # Classify based on normalized bedtime (handles overnight sleep)
+        is_night_owl = avg_bedtime_norm >= 23
+        is_morning_person = avg_bedtime_norm < 23 and avg_wake < 8
 
-        # Classify as morning/evening person based on wake time
-        is_morning_person = avg_wake < 7.0
-        is_night_person = avg_bedtime >= 23.0 or avg_bedtime < 2.0
-
-        # Pattern strength based on how clear the schedule is
-        bedtime_std = pstdev(bedtimes) if len(bedtimes) > 1 else 0
+        # Pattern strength based on schedule consistency
+        bedtime_std = pstdev(normalized_bedtimes) if len(normalized_bedtimes) > 1 else 0
         wake_std = pstdev(wake_times) if len(wake_times) > 1 else 0
         consistency = max(0.0, 1.0 - (bedtime_std + wake_std) / 4.0)
         pattern_strength = max(0.3, consistency)
         confidence = self._confidence(len(sleep_rows), pattern_strength)
 
-        wake_label = self._hour_label(int(avg_wake))
+        wake_label = self._hour_label(int(avg_wake) % 24)
         bed_label = self._hour_label(int(avg_bedtime) % 24)
 
+        # Productive window: wake + 1h to wake + 4h (cortisol peak)
+        peak_start = (int(avg_wake) + 1) % 24
+        peak_end = (int(avg_wake) + 4) % 24
+        peak_window = f"{self._hour_label(peak_start)}-{self._hour_label(peak_end)}"
+
         if is_morning_person:
-            peak_window = f"{wake_label}-{self._hour_label(int(avg_wake) + 4)}"
             commentary = (
-                f"Up by {wake_label}, down by {bed_label}. "
-                f"Your sharpest window is {peak_window} — front-load hard work there."
+                f"Early riser — up by {wake_label}, down by {bed_label}. "
+                f"Front-load deep work in {peak_window}."
             )
             insight_type = InsightType.PROGRESS
             action_steps = [
@@ -515,25 +522,21 @@ class HealthInsightsEngine:
                 "Protect mornings from meetings when possible",
                 "Use afternoon for admin and routine tasks",
             ]
-        elif is_night_person:
-            peak_window = f"8pm-{bed_label}"
+        elif is_night_owl:
             commentary = (
-                f"You're usually up by {wake_label} and wind down around {bed_label}. "
-                f"Your productive window is late — lean into it."
+                f"You're running a late schedule — up around {wake_label}, down around {bed_label}. "
+                f"Your sharpest window is {peak_window}."
             )
             insight_type = InsightType.BEHAVIORAL
             action_steps = [
-                f"Schedule creative or deep work during {peak_window}",
-                "Use mornings for routine tasks, not deep thinking",
-                "Consider a 20-minute power nap between 2-4 PM if energy dips",
+                f"Block {peak_window} for deep or creative work",
+                "Use the first hour after waking for routine tasks, not decisions",
+                "Protect your sleep — consistency matters more than early rising",
             ]
         else:
-            midpoint = (avg_wake + avg_bedtime) / 2
-            peak_start = int(midpoint - 1.5) % 24
-            peak_window = self._format_hour_window(peak_start, 3)
             commentary = (
                 f"Up around {wake_label}, asleep by {bed_label}. "
-                f"Your sharpest window looks like {peak_window}."
+                f"{peak_window} is your focus window."
             )
             insight_type = InsightType.BEHAVIORAL
             action_steps = [
@@ -598,7 +601,7 @@ class HealthInsightsEngine:
                 "avg_wake": round(avg_wake, 1),
                 "peak_window": peak_window,
                 "is_morning_person": is_morning_person,
-                "is_night_person": is_night_person,
+                "is_night_owl": is_night_owl,
             },
             insight_title=insight.title,
         )
