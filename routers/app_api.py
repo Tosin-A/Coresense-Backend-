@@ -1120,7 +1120,7 @@ async def record_insight_reaction(
 
 @router.get("/commitments")
 async def get_commitments(user_id: str = Depends(get_current_user_id)):
-    """Get active commitments. Legacy endpoint — replaced by shared_todos."""
+    """Get active commitments. Legacy endpoint, replaced by shared_todos."""
     return []
 
 
