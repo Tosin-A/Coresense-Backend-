@@ -1120,28 +1120,8 @@ async def record_insight_reaction(
 
 @router.get("/commitments")
 async def get_commitments(user_id: str = Depends(get_current_user_id)):
-    """Get active commitments."""
-    try:
-        response = get_supabase_client().table('commitments').select('*').eq(
-            'user_id', user_id
-        ).eq('status', 'active').order('created_at', desc=True).execute()
-        
-        commitments = []
-        if response.data:
-            for c in response.data:
-                commitments.append({
-                    "id": c['id'],
-                    "text": c['commitment_text'],
-                    "dueDate": c.get('due_date'),
-                    "priority": c.get('priority', 'medium'),
-                    "createdAt": c['created_at']
-                })
-        
-        return commitments
-        
-    except Exception as e:
-        logger.error(f"Error fetching commitments: {e}")
-        raise DatabaseError("Failed to fetch commitments", original_error=e)
+    """Get active commitments. Legacy endpoint — replaced by shared_todos."""
+    return []
 
 
 @router.post("/commitments/{commitment_id}/check-in")

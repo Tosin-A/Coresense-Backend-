@@ -343,7 +343,7 @@ class HealthInsightsEngine:
                     })
                     used_checkin_fallback = True
 
-        if len(sleep_rows) < 2:
+        if len(sleep_rows) < 1:
             return None
 
         sleep_values = [float(r["sleep_duration_hours"]) for r in sleep_rows]
