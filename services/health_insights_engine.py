@@ -324,14 +324,15 @@ class HealthInsightsEngine:
     async def _analyze_sleep_patterns(
         self, user_id: str, health_data: List[Dict], metrics_data: List[Dict] = None
     ) -> Optional[Dict]:
-        sleep_rows = [r for r in health_data if r.get("sleep_duration_hours") is not None]
+        # Only count rows with actual sleep data (view returns 0, not NULL, when no sleep_duration metric exists)
+        sleep_rows = [r for r in health_data if float(r.get("sleep_duration_hours") or 0) > 0]
 
-        # Fallback: merge check-in sleep hours for dates missing from HealthKit
+        # Merge check-in sleep hours for dates missing real HealthKit sleep data
         used_checkin_fallback = False
-        if len(sleep_rows) < 2 and metrics_data:
+        if metrics_data:
             health_dates = {r.get("date") for r in sleep_rows}
             for m_row in metrics_data:
-                if m_row.get("avg_sleep_hours") is not None and m_row.get("date") not in health_dates:
+                if m_row.get("avg_sleep_hours") is not None and float(m_row["avg_sleep_hours"]) > 0 and m_row.get("date") not in health_dates:
                     sleep_rows.append({
                         "date": m_row["date"],
                         "sleep_duration_hours": m_row["avg_sleep_hours"],
@@ -354,12 +355,21 @@ class HealthInsightsEngine:
         pattern_strength = min(1.0, abs(avg_sleep - 7.0) / 2.0)
         confidence = self._confidence(len(sleep_rows), pattern_strength)
 
-        # Build chart from merged data if check-in fallback was used
+        # Build chart from merged data — replace zero-sleep days with check-in values
         if used_checkin_fallback:
-            merged_for_chart = list(health_data)
-            health_dates_set = {r.get("date") for r in health_data if r.get("sleep_duration_hours") is not None}
-            for r in sleep_rows:
-                if r.get("source") == "checkin" and r["date"] not in health_dates_set:
+            checkin_by_date = {r["date"]: r for r in sleep_rows if r.get("source") == "checkin"}
+            merged_for_chart = []
+            for r in health_data:
+                d = r.get("date")
+                if float(r.get("sleep_duration_hours") or 0) == 0 and d in checkin_by_date:
+                    # Replace the zero-value row with check-in data
+                    merged_for_chart.append(checkin_by_date[d])
+                else:
+                    merged_for_chart.append(r)
+            # Add check-in dates not present in health_data at all
+            health_data_dates = {r.get("date") for r in health_data}
+            for d, r in checkin_by_date.items():
+                if d not in health_data_dates:
                     merged_for_chart.append(r)
             merged_for_chart.sort(key=lambda x: x.get("date", ""))
             labels, values = self._last_7_days_series(merged_for_chart, "sleep_duration_hours")
