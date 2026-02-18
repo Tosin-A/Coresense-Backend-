@@ -75,5 +75,8 @@ StrEnum==0.4.15
 # Scheduler for background tasks
 apscheduler==3.10.4
 
+# Payments
+stripe
+
 # Note: ML packages (torch, transformers, mlx, etc.) are excluded
 # as they're not needed for the API server and are too large for production builds
