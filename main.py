@@ -17,6 +17,7 @@ from backend.routers.coaching_router import router as coaching_router
 from backend.routers.notifications import router as notifications_router
 from backend.routers.patterns import router as patterns_router
 from backend.routers.todos import router as todos_router
+from backend.routers.subscription_router import router as subscription_router
 # from backend.routers.wellness_router import router as wellness_router  # TODO: Enable after creating wellness services
 from backend.middleware.rate_limit_middleware import RateLimitMiddleware
 from backend.config import get_settings
@@ -72,6 +73,7 @@ app.include_router(coaching_router)
 app.include_router(notifications_router)
 app.include_router(patterns_router)
 app.include_router(todos_router)
+app.include_router(subscription_router)
 # app.include_router(wellness_router)  # TODO: Enable after creating wellness services
 
 

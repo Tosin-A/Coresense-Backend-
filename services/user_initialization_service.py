@@ -55,6 +55,7 @@ def initialize_new_user(user_id: str, user_email: str = None, full_name: str = N
                     "id": user_id,
                     "email": user_email or "",
                     "full_name": full_name,
+                    "username": full_name,
                     "created_at": datetime.now().isoformat(),
                     "updated_at": datetime.now().isoformat()
                 }

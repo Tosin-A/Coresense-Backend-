@@ -203,6 +203,30 @@ def upgrade_to_pro(user_id: str) -> bool:
         return False
 
 
+def downgrade_from_pro(user_id: str) -> bool:
+    """Revert a user from pro to free plan."""
+    try:
+        client = get_supabase_client()
+        response = client.table("user_message_limits")\
+            .update({
+                "is_pro": False,
+                "daily_limit": FREE_DAILY_LIMIT,
+                "weekly_limit": FREE_WEEKLY_LIMIT,
+                "pro_upgraded_at": None,
+            })\
+            .eq("user_id", user_id)\
+            .execute()
+
+        success = len(response.data) > 0 if response.data else False
+        if success:
+            logger.info(f"Downgraded user {user_id} from pro plan")
+        return success
+
+    except Exception as e:
+        logger.error(f"Failed to downgrade user {user_id} from pro: {e}", exc_info=True)
+        return False
+
+
 def get_user_usage_stats(user_id: str) -> Dict[str, Any]:
     """Get user's message usage statistics with daily/weekly breakdown."""
     try:

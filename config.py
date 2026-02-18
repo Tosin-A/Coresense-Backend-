@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     gpt_model: Optional[str] = "gpt-4o-mini"
     openai_assistant_id: Optional[str] = None
     
+    # Stripe
+    stripe_secret_key: Optional[str] = None
+    stripe_publishable_key: Optional[str] = None
+    stripe_webhook_secret: Optional[str] = None
+    stripe_price_id: Optional[str] = None
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
