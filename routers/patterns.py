@@ -11,7 +11,8 @@ from datetime import datetime
 
 from backend.services.pattern_recognition import pattern_recognition_service, DetectedPattern
 from backend.database.supabase_client import get_supabase_client
-from backend.utils.exceptions import DatabaseError
+from backend.middleware.auth_helper import get_current_user_id
+from backend.utils.exceptions import DatabaseError, AuthorizationError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/patterns", tags=["patterns"])
@@ -35,16 +36,14 @@ class PatternAnalysisResponse(BaseModel):
     user_id: str
 
 
-@router.get("/analyze/{user_id}", response_model=PatternAnalysisResponse)
+@router.get("/analyze", response_model=PatternAnalysisResponse)
 async def analyze_user_patterns(
-    user_id: str,
+    current_user_id: str = Depends(get_current_user_id),
     days_back: int = Query(30, ge=7, le=365, description="Number of days to analyze"),
-    user_id_param: str = Query(None, description="Alternative user ID parameter")
 ):
     """Analyze user behavior patterns over specified time period"""
     try:
-        # Use provided user_id_param or fall back to path parameter
-        actual_user_id = user_id_param or user_id
+        actual_user_id = current_user_id
         
         # Analyze patterns
         patterns = await pattern_recognition_service.analyze_user_patterns(
@@ -78,14 +77,13 @@ async def analyze_user_patterns(
         raise DatabaseError("Failed to analyze patterns", original_error=e)
 
 
-@router.get("/summary/{user_id}")
+@router.get("/summary")
 async def get_pattern_summary(
-    user_id: str,
-    user_id_param: str = Query(None, description="Alternative user ID parameter")
+    current_user_id: str = Depends(get_current_user_id),
 ):
-    """Get a summary of detected patterns for a user"""
+    """Get a summary of detected patterns for the authenticated user"""
     try:
-        actual_user_id = user_id_param or user_id
+        actual_user_id = current_user_id
         
         # Analyze patterns
         patterns = await pattern_recognition_service.analyze_user_patterns(
@@ -161,14 +159,13 @@ async def get_pattern_summary(
         raise DatabaseError("Failed to get pattern summary", original_error=e)
 
 
-@router.get("/insights/{user_id}")
+@router.get("/insights")
 async def generate_pattern_insights(
-    user_id: str,
-    user_id_param: str = Query(None, description="Alternative user ID parameter")
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Generate actionable insights based on detected patterns"""
     try:
-        actual_user_id = user_id_param or user_id
+        actual_user_id = current_user_id
         
         # Analyze patterns
         patterns = await pattern_recognition_service.analyze_user_patterns(
@@ -206,30 +203,6 @@ async def generate_pattern_insights(
         logger.error(f"Error generating pattern insights for {user_id}: {e}")
         raise DatabaseError("Failed to generate pattern insights", original_error=e)
 
-
-@router.post("/test-analysis")
-async def test_pattern_analysis():
-    """Test endpoint for pattern analysis with sample data"""
-    try:
-        # This would typically test with a sample user ID
-        # For now, return a success message
-        return {
-            "success": True,
-            "message": "Pattern analysis service is ready",
-            "supported_patterns": [
-                "usage_pattern",
-                "response_pattern", 
-                "time_pattern",
-                "commitment_pattern",
-                "streak_pattern",
-                "engagement_pattern"
-            ],
-            "test_instructions": "Use /analyze/{user_id} endpoint with a real user ID to test pattern analysis"
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in test pattern analysis: {e}")
-        raise DatabaseError("Pattern analysis test failed", original_error=e)
 
 
 @router.get("/health")

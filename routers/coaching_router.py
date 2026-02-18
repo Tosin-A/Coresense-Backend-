@@ -3,7 +3,7 @@ Unified Coaching Router - Consolidated endpoints for all coaching functionality
 """
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 import logging
@@ -34,10 +34,17 @@ router = APIRouter(prefix="/api/v1/coach", tags=["unified-coaching"])
 # ============================================================================
 
 class CoachingChatRequest(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=10000)
     context: Optional[Dict[str, Any]] = None
     response_type: Optional[CoachingResponseType] = CoachingResponseType.COACHING
-    client_temp_id: Optional[str] = None  # Client's temp ID for reconciliation
+    client_temp_id: Optional[str] = Field(None, max_length=100)
+
+    @field_validator('message')
+    @classmethod
+    def validate_message(cls, v):
+        if not v.strip():
+            raise ValueError('Message cannot be empty')
+        return v
 
 
 class CoachingChatResponse(BaseModel):
@@ -122,6 +129,13 @@ class UsageStatsResponse(BaseModel):
     is_pro: bool
     messages_remaining: int
     usage_percentage: float
+    daily_used: int = 0
+    daily_limit: int = 10
+    daily_remaining: int = 10
+    weekly_used: int = 0
+    weekly_limit: int = 30
+    weekly_remaining: int = 30
+    limit_type: Optional[str] = None
 
 
 @router.post("/custom-gpt/chat", response_model=CoachingChatResponse)
@@ -131,8 +145,8 @@ async def chat_with_coach_custom_gpt(
 ):
     """Custom GPT chat endpoint - mirrors the main chat endpoint"""
     try:
-        logger.info(f"🚀 CUSTOM GPT CHAT - User: {current_user_id}, Message: '{request.message[:50]}{'...' if len(request.message) > 50 else ''}'")
-        
+        logger.info(f"Custom GPT chat request, type: {request.response_type}")
+
         response = await unified_coaching_service.chat(
             user_id=current_user_id,
             message=request.message,
@@ -140,8 +154,8 @@ async def chat_with_coach_custom_gpt(
             context=request.context,
             client_temp_id=request.client_temp_id
         )
-        
-        logger.info(f"✅ CUSTOM GPT CHAT COMPLETE - Messages: {len(response.messages)}, saved_ids: {response.saved_ids}")
+
+        logger.info(f"Custom GPT chat complete, messages: {len(response.messages)}")
         
         return CoachingChatResponse(
             messages=response.messages,
@@ -164,15 +178,16 @@ async def chat_with_coach_custom_gpt(
         raise DatabaseError("Failed to generate coach response", original_error=e)
 
 
-@router.get("/history/{user_id}")
+@router.get("/history")
 async def get_chat_history(
-    user_id: str,
+    current_user_id: str = Depends(get_current_user_id),
     limit: int = 50,
     offset: int = 0
 ):
-    """Get chat history for a user from Supabase (source of truth)"""
+    """Get chat history for the authenticated user from Supabase (source of truth)"""
+    user_id = current_user_id
     try:
-        logger.info(f"📜 Getting chat history for user: {user_id}, limit: {limit}, offset: {offset}")
+        logger.info(f"📜 Getting chat history for user, limit: {limit}, offset: {offset}")
         
         from backend.database.supabase_client import get_supabase_client
         
@@ -213,11 +228,10 @@ async def get_chat_history(
         }
         
     except Exception as e:
-        logger.error(f"❌ Error getting chat history from Supabase: {e}", exc_info=True)
+        logger.error(f"Error getting chat history: {e}", exc_info=True)
         return {
             "messages": [],
-            "has_more": False,
-            "error": str(e)
+            "has_more": False
         }
 
 
@@ -232,8 +246,8 @@ async def chat_with_coach(
 ):
     """Unified chat endpoint - handles all coaching conversation types"""
     try:
-        logger.info(f"🚀 UNIFIED CHAT - User: {current_user_id}, Type: {request.response_type}, Message: '{request.message[:50]}{'...' if len(request.message) > 50 else ''}'")
-        
+        logger.info(f"Chat request, type: {request.response_type}")
+
         # Use unified coaching service
         response = await unified_coaching_service.chat(
             user_id=current_user_id,
@@ -242,8 +256,8 @@ async def chat_with_coach(
             context=request.context,
             client_temp_id=request.client_temp_id
         )
-        
-        logger.info(f"✅ UNIFIED CHAT COMPLETE - Messages: {len(response.messages)}, Type: {response.response_type}, saved_ids: {response.saved_ids}")
+
+        logger.info(f"Chat complete, messages: {len(response.messages)}, type: {response.response_type}")
         
         return CoachingChatResponse(
             messages=response.messages,
@@ -266,9 +280,10 @@ async def chat_with_coach(
         raise DatabaseError("Failed to generate coach response", original_error=e)
 
 
-@router.get("/context/{user_id}", response_model=Dict[str, Any])
-async def get_user_coaching_context(user_id: str):
+@router.get("/context", response_model=Dict[str, Any])
+async def get_user_coaching_context(current_user_id: str = Depends(get_current_user_id)):
     """Get comprehensive user coaching context"""
+    user_id = current_user_id
     try:
         context = await unified_coaching_service.get_user_context(user_id)
         
@@ -292,14 +307,14 @@ async def get_user_coaching_context(user_id: str):
         logger.error(f"Error getting user coaching context: {e}")
         return {
             "user_id": user_id,
-            "error": str(e),
             "success": False
         }
 
 
-@router.get("/insights/{user_id}", response_model=CoachingInsightsResponse)
-async def get_coaching_insights(user_id: str):
+@router.get("/insights", response_model=CoachingInsightsResponse)
+async def get_coaching_insights(current_user_id: str = Depends(get_current_user_id)):
     """Get comprehensive coaching insights and statistics"""
+    user_id = current_user_id
     try:
         insights = await unified_coaching_service.get_coaching_insights(user_id)
         
@@ -318,8 +333,13 @@ async def get_coaching_insights(user_id: str):
 
 
 @router.get("/status/{user_id}", response_model=CoachingStatusResponse)
-async def get_coach_status(user_id: str):
+async def get_coach_status(
+    user_id: str,
+    current_user_id: str = Depends(get_current_user_id)
+):
     """Get coach status and relationship metrics"""
+    if current_user_id != user_id:
+        raise AuthorizationError("Cannot access another user's coach status")
     try:
         # Get user context for status calculation
         context = await unified_coaching_service.get_user_context(user_id)
@@ -352,21 +372,33 @@ async def get_coach_status(user_id: str):
 
 
 @router.get("/usage/{user_id}", response_model=UsageStatsResponse)
-async def get_message_usage(user_id: str):
+async def get_message_usage(
+    user_id: str,
+    current_user_id: str = Depends(get_current_user_id)
+):
     """Get user's message usage statistics"""
+    if current_user_id != user_id:
+        raise AuthorizationError("Cannot access another user's usage stats")
     try:
         from backend.services.message_limit_service import get_user_usage_stats
-        
+
         stats = get_user_usage_stats(user_id)
-        allowed = stats['is_pro'] or stats['messages_remaining'] > 0
-        
+        allowed = stats['messages_remaining'] > 0
+
         return UsageStatsResponse(
             allowed=allowed,
             messages_used=stats['messages_used'],
             messages_limit=stats['messages_limit'],
             is_pro=stats['is_pro'],
             messages_remaining=stats['messages_remaining'],
-            usage_percentage=stats['usage_percentage']
+            usage_percentage=stats['usage_percentage'],
+            daily_used=stats.get('daily_used', 0),
+            daily_limit=stats.get('daily_limit', 10),
+            daily_remaining=stats.get('daily_remaining', 10),
+            weekly_used=stats.get('weekly_used', 0),
+            weekly_limit=stats.get('weekly_limit', 30),
+            weekly_remaining=stats.get('weekly_remaining', 30),
+            limit_type=stats.get('limit_type'),
         )
     except Exception as e:
         logger.error(f"Error getting usage stats for user {user_id}: {e}")
@@ -424,7 +456,10 @@ async def get_coach_signature_phrases(category: str):
 
 
 @router.post("/analyze-pattern", response_model=PatternAnalysisResponse)
-async def analyze_user_message_pattern(request: PatternAnalysisRequest):
+async def analyze_user_message_pattern(
+    request: PatternAnalysisRequest,
+    current_user_id: str = Depends(get_current_user_id)
+):
     """Analyze user message for coaching approach"""
     try:
         analysis = unified_coaching_service.analyze_user_pattern(request.message)
@@ -538,8 +573,13 @@ async def get_coach_pressure(
 
 
 @router.get("/stats/{user_id}")
-async def get_coaching_statistics(user_id: str):
+async def get_coaching_statistics(
+    user_id: str,
+    current_user_id: str = Depends(get_current_user_id)
+):
     """Backward compatibility: Get coaching usage statistics and insights"""
+    if current_user_id != user_id:
+        raise AuthorizationError("Cannot access another user's coaching stats")
     try:
         insights = await unified_coaching_service.get_coaching_insights(user_id)
         
@@ -563,7 +603,6 @@ async def get_coaching_statistics(user_id: str):
             "attachment_level": "unknown",
             "preferred_coaching_style": "unknown",
             "response_effectiveness": 0.0,
-            "error": str(e)
         }
 
 

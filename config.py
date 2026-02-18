@@ -18,11 +18,12 @@ class Settings(BaseSettings):
     
     # Server
     port: int = 8000
-    environment: str = "development"
+    environment: str = "production"
     
     # Optional: Will be needed in later milestones
     openai_api_key: Optional[str] = None
     gpt_model: Optional[str] = "gpt-4o-mini"
+    openai_assistant_id: Optional[str] = None
     
     model_config = SettingsConfigDict(
         env_file=".env",

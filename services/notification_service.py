@@ -330,7 +330,7 @@ class NotificationService:
                     if result.get("data") and len(result["data"]) > 0:
                         ticket = result["data"][0]
                         if ticket.get("status") == "ok":
-                            logger.info(f"Push notification sent successfully to token {token[:20]}...")
+                            logger.info("Push notification sent successfully")
                             return True
                         else:
                             logger.warning(f"Push notification error: {ticket.get('message', 'Unknown error')}")
@@ -341,7 +341,7 @@ class NotificationService:
                     return False
 
         except httpx.TimeoutException:
-            logger.error(f"Timeout sending push notification to {token[:20]}...")
+            logger.error("Timeout sending push notification")
             return False
         except Exception as e:
             logger.error(f"Error sending Expo push notification: {e}")

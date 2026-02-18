@@ -64,7 +64,7 @@ class MessageStorageService:
             
             supabase.table("messages").insert(insert_data).execute()
             
-            logger.info(f"💾 Stored user message: chat_id={chat_id}, user_id={user_id}, client_temp_id={client_temp_id}")
+            logger.info("Stored user message")
             return chat_id
             
         except Exception as e:

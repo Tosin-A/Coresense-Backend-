@@ -6,7 +6,8 @@ Handles coach-shared to-do items between user and AI coach.
 from fastapi import APIRouter, Depends
 from datetime import datetime, timezone
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+import re
 import logging
 
 from backend.database.supabase_client import get_supabase_client
@@ -22,15 +23,40 @@ router = APIRouter(prefix="/api/v1", tags=["todos"])
 # REQUEST/RESPONSE MODELS
 # ============================================
 
+VALID_PRIORITIES = {"low", "medium", "high", "urgent"}
+VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
+
+
 class CreateTodoRequest(BaseModel):
     """Request to create a user-created todo."""
-    title: str
-    description: Optional[str] = None
+    title: str = Field(..., min_length=1, max_length=500)
+    description: Optional[str] = Field(None, max_length=2000)
     priority: Optional[str] = "medium"
     due_date: Optional[str] = None  # ISO date string (YYYY-MM-DD)
     due_time: Optional[str] = None  # Time string (HH:MM)
     reminder_enabled: Optional[bool] = False
-    reminder_minutes_before: Optional[int] = 30
+    reminder_minutes_before: Optional[int] = Field(30, ge=0, le=10080)
+
+    @field_validator('priority')
+    @classmethod
+    def validate_priority(cls, v):
+        if v is not None and v not in VALID_PRIORITIES:
+            raise ValueError(f'Priority must be one of: {VALID_PRIORITIES}')
+        return v
+
+    @field_validator('due_date')
+    @classmethod
+    def validate_due_date(cls, v):
+        if v is not None and not re.match(r'^\d{4}-\d{2}-\d{2}$', v):
+            raise ValueError('due_date must be in YYYY-MM-DD format')
+        return v
+
+    @field_validator('due_time')
+    @classmethod
+    def validate_due_time(cls, v):
+        if v is not None and not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', v):
+            raise ValueError('due_time must be in HH:MM format')
+        return v
 
 
 class CreateCoachTodoRequest(CreateTodoRequest):
@@ -41,18 +67,46 @@ class CreateCoachTodoRequest(CreateTodoRequest):
 
 class UpdateTodoStatusRequest(BaseModel):
     """Request to update todo status."""
-    status: str  # 'pending', 'in_progress', 'completed', 'cancelled'
+    status: str
+
+    @field_validator('status')
+    @classmethod
+    def validate_status(cls, v):
+        if v not in VALID_STATUSES:
+            raise ValueError(f'Status must be one of: {VALID_STATUSES}')
+        return v
 
 
 class UpdateTodoRequest(BaseModel):
     """Request to update todo details."""
-    title: Optional[str] = None
-    description: Optional[str] = None
+    title: Optional[str] = Field(None, min_length=1, max_length=500)
+    description: Optional[str] = Field(None, max_length=2000)
     priority: Optional[str] = None
     due_date: Optional[str] = None
     due_time: Optional[str] = None
     reminder_enabled: Optional[bool] = None
-    reminder_minutes_before: Optional[int] = None
+    reminder_minutes_before: Optional[int] = Field(None, ge=0, le=10080)
+
+    @field_validator('priority')
+    @classmethod
+    def validate_priority(cls, v):
+        if v is not None and v not in VALID_PRIORITIES:
+            raise ValueError(f'Priority must be one of: {VALID_PRIORITIES}')
+        return v
+
+    @field_validator('due_date')
+    @classmethod
+    def validate_due_date(cls, v):
+        if v is not None and not re.match(r'^\d{4}-\d{2}-\d{2}$', v):
+            raise ValueError('due_date must be in YYYY-MM-DD format')
+        return v
+
+    @field_validator('due_time')
+    @classmethod
+    def validate_due_time(cls, v):
+        if v is not None and not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', v):
+            raise ValueError('due_time must be in HH:MM format')
+        return v
 
 
 # ============================================

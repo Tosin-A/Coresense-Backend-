@@ -55,15 +55,16 @@ app = FastAPI(
 settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.environment == "development" else [],
+    allow_origins=["*"] if settings.environment == "development" else [
+        "https://coresense-backend-production.up.railway.app",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Add rate limiting middleware (after CORS)
-#TEMPORARILY DISABLED - Uncomment after running DATABASE_SETUP_GUIDE.md
-# app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RateLimitMiddleware)
 
 # Include routers
 app.include_router(app_api_router)

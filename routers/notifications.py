@@ -4,7 +4,7 @@ Handles push notifications, device tokens, preferences, and notification history
 """
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import logging
 from datetime import datetime, timezone
@@ -23,33 +23,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/notifications", tags=["notifications"])
 
 
+VALID_PRIORITIES = {"low", "normal", "high", "urgent"}
+VALID_MESSAGE_TYPES = {"coach_message", "task_reminder", "streak_alert", "insight", "nudge"}
+VALID_NUDGE_TYPES = {"deadline", "missed_streak", "pattern_broken"}
+
+
 class QueueMessageRequest(BaseModel):
-    message_text: str
-    message_type: str = "coach_message"
-    priority: str = "normal"
+    message_text: str = Field(..., min_length=1, max_length=5000)
+    message_type: str = Field("coach_message", max_length=30)
+    priority: str = Field("normal", max_length=10)
     scheduled_for: Optional[datetime] = None
     context: Optional[Dict[str, Any]] = None
 
 
 class CheckinRequest(BaseModel):
-    message: str
-    priority: str = "normal"
+    message: str = Field(..., min_length=1, max_length=2000)
+    priority: str = Field("normal", max_length=10)
 
 
 class PatternAlertRequest(BaseModel):
-    pattern_type: str
-    message: str
+    pattern_type: str = Field(..., max_length=50)
+    message: str = Field(..., min_length=1, max_length=2000)
 
 
 class AccountabilityNudgeRequest(BaseModel):
-    nudge_type: str  # deadline, missed_streak, pattern_broken
-    message: str
+    nudge_type: str = Field(..., max_length=30)
+    message: str = Field(..., min_length=1, max_length=2000)
 
 
 class RegisterDeviceRequest(BaseModel):
-    push_token: str
-    platform: str  # 'ios' or 'android'
-    expo_push_token: Optional[str] = None  # Expo format token
+    push_token: str = Field(..., min_length=1, max_length=500)
+    platform: str = Field(..., pattern=r'^(ios|android)$')
+    expo_push_token: Optional[str] = Field(None, max_length=500)
 
 
 class UpdatePreferencesRequest(BaseModel):
@@ -492,28 +497,6 @@ async def get_notification_stats(
         logger.error(f"Error getting notification stats: {e}")
         raise DatabaseError("Failed to get notification stats", original_error=e)
 
-
-@router.post("/test-coach-message")
-async def test_coach_message(
-    user_id: str = "c18f7b13-6d6a-42d6-ac2e-c67cf90e1d1e"  # Test user ID
-):
-    """Test endpoint to send a coach message"""
-    try:
-        # Send a test coach message
-        success = await notification_service.send_coach_checkin(
-            user_id=user_id,
-            message="Hey. Still on track today?",
-            priority="normal"
-        )
-
-        if success:
-            return {"success": True, "message": "Test coach message sent"}
-        else:
-            raise DatabaseError("Failed to send test message")
-
-    except Exception as e:
-        logger.error(f"Error sending test coach message: {e}")
-        raise DatabaseError("Failed to send test message", original_error=e)
 
 
 @router.post("/test-all-personalized")

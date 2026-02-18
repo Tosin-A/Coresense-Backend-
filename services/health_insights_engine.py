@@ -209,6 +209,7 @@ class HealthInsightsEngine:
                 .eq("user_id", user_id)
                 .gte("date", start_date)
                 .order("date")
+                .limit(365)
                 .execute()
             )
             data = response.data or []
@@ -256,6 +257,7 @@ class HealthInsightsEngine:
                 .select("metric_type,value,recorded_at")
                 .eq("user_id", user_id)
                 .gte("recorded_at", start_date)
+                .limit(5000)
                 .execute()
             )
             rows = response.data or []

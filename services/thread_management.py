@@ -46,7 +46,7 @@ class ThreadManagementService:
             logger.info("OpenAI API client initialized")
         
         # The main coach assistant
-        self.assistant_id = "asst_vb5GaGjEUo5REgjBrTYADHKf"
+        self.assistant_id = settings.openai_assistant_id or "asst_vb5GaGjEUo5REgjBrTYADHKf"
         
         # Function definitions for the assistant
         self.functions = [

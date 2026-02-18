@@ -42,7 +42,7 @@ def handle_supabase_response(
             logger.error(f"Supabase error: {error}")
             raise HTTPException(
                 status_code=status_code,
-                detail=error_message if not error else f"{error_message}: {str(error)}"
+                detail=error_message
             )
         else:
             # Response might be the data directly
@@ -53,7 +53,7 @@ def handle_supabase_response(
         logger.error(f"Unexpected error handling Supabase response: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status_code,
-            detail=f"{error_message}: {str(e)}"
+            detail=error_message
         )
 
 
@@ -95,7 +95,7 @@ def handle_supabase_error(
     else:
         raise HTTPException(
             status_code=status_code,
-            detail=f"{error_message}: {error_str}"
+            detail=error_message
         )
 
 

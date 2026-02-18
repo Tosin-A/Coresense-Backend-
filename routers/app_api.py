@@ -6,7 +6,8 @@ Handles all mobile app data requests with real user data only.
 from fastapi import APIRouter, Depends
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, Field
+import re
 import logging
 
 from backend.database.supabase_client import get_supabase_client
@@ -27,50 +28,98 @@ router = APIRouter(prefix="/api/v1", tags=["app"])
 # ============================================
 
 class ProfileUpdateRequest(BaseModel):
-    full_name: Optional[str] = None
-    username: Optional[str] = None
-    timezone: Optional[str] = None
-    phone_number: Optional[str] = None
+    full_name: Optional[str] = Field(None, max_length=100)
+    username: Optional[str] = Field(None, max_length=50)
+    timezone: Optional[str] = Field(None, max_length=50)
+    phone_number: Optional[str] = Field(None, max_length=20)
+
+    @field_validator('timezone')
+    @classmethod
+    def validate_timezone(cls, v):
+        if v is not None:
+            import pytz
+            try:
+                pytz.timezone(v)
+            except pytz.exceptions.UnknownTimeZoneError:
+                raise ValueError(f'Invalid timezone: {v}')
+        return v
 
 
 class PreferencesUpdateRequest(BaseModel):
-    messaging_style: Optional[str] = None
-    messaging_frequency: Optional[int] = None
+    messaging_style: Optional[str] = Field(None, max_length=30)
+    messaging_frequency: Optional[int] = Field(None, ge=1, le=20)
     quiet_hours_enabled: Optional[bool] = None
     quiet_hours_start: Optional[str] = None
     quiet_hours_end: Optional[str] = None
-    accountability_level: Optional[int] = None
+    accountability_level: Optional[int] = Field(None, ge=1, le=10)
     goals: Optional[List[str]] = None
     healthkit_enabled: Optional[bool] = None
     push_notifications: Optional[bool] = None
     task_reminders: Optional[bool] = None
     weekly_reports: Optional[bool] = None
 
+    @field_validator('quiet_hours_start', 'quiet_hours_end')
+    @classmethod
+    def validate_time_format(cls, v):
+        if v is not None and not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', v):
+            raise ValueError('Time must be in HH:MM format (00:00 - 23:59)')
+        return v
+
+
+# Metric value ranges per type
+METRIC_RANGES = {
+    'energy': (1, 10),
+    'mood': (1, 5),
+    'sleep': (0, 24),
+    'sleep_duration': (0, 24),
+    'stress': (0, 10),
+    'focus': (0, 10),
+    'steps': (0, 200000),
+    'heart_rate': (30, 250),
+    'hydration': (0, 20),
+}
+
 
 class HealthMetricIn(BaseModel):
-    metric_type: str
+    metric_type: str = Field(..., max_length=30)
     value: float
-    unit: str
+    unit: str = Field(..., max_length=20)
     recorded_at: datetime
-    source: Optional[str] = "healthkit"
+    source: Optional[str] = Field("healthkit", max_length=30)
     metadata: Optional[dict] = None
+
+    @field_validator('value')
+    @classmethod
+    def validate_value_range(cls, v, info):
+        if v != v:  # NaN check
+            raise ValueError('Value cannot be NaN')
+        if v == float('inf') or v == float('-inf'):
+            raise ValueError('Value cannot be infinite')
+        return v
 
 
 class HealthSyncRequest(BaseModel):
-    metrics: List[HealthMetricIn]
+    metrics: List[HealthMetricIn] = Field(..., max_length=500)
 
 
 class MetricLogRequest(BaseModel):
     """Request to log a single metric."""
-    metric_type: str  # 'energy', 'mood', 'sleep', 'stress', 'focus'
+    metric_type: str = Field(..., max_length=20)
     value: float
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(None, max_length=500)
     context: Optional[dict] = None
+
+    @field_validator('value')
+    @classmethod
+    def validate_metric_value(cls, v, info):
+        if v != v or v == float('inf') or v == float('-inf'):
+            raise ValueError('Value must be a finite number')
+        return v
 
 
 class MetricBatchRequest(BaseModel):
     """Request to log multiple metrics at once."""
-    metrics: List[MetricLogRequest]
+    metrics: List[MetricLogRequest] = Field(..., max_length=50)
 
 
 
@@ -80,53 +129,53 @@ class MetricBatchRequest(BaseModel):
 
 @router.get("/home/data")
 async def get_home_data(user_id: str = Depends(get_current_user_id)):
-    """Get all data needed for home screen - real user data only."""
-    try:
-        supabase = get_supabase_client()
-        
-        # Get last coach message (supports direction or sender_type)
+    """
+    Get all data needed for home screen - batched queries.
+    Runs independent queries in parallel via asyncio.gather to reduce latency.
+    """
+    import asyncio
+
+    supabase = get_supabase_client()
+    now_utc = datetime.now(timezone.utc)
+    today_utc = now_utc.date()
+    start_of_day = datetime.combine(today_utc, datetime.min.time(), tzinfo=timezone.utc).isoformat()
+    end_of_day = (datetime.combine(today_utc, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)).isoformat()
+    week_ago = datetime.combine(today_utc - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc).isoformat()
+    yesterday_start = datetime.combine(today_utc - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).isoformat()
+
+    # Define each query as a sync function to run in parallel via asyncio.to_thread
+    def fetch_last_message():
         try:
-            messages_response = (
-                supabase
-                .table('messages')
-                .select('*')
+            resp = (
+                supabase.table('messages')
+                .select('chat_id,content,message_text,created_at,read_in_app,direction,sender_type')
                 .eq('userid', user_id)
                 .or_('direction.eq.outgoing,sender_type.eq.gpt')
                 .order('created_at', desc=True)
                 .limit(1)
                 .execute()
             )
-            
-            last_message = None
-            if messages_response.data:
-                msg = messages_response.data[0]
+            if resp.data:
+                msg = resp.data[0]
                 direction = msg.get('direction') or (
-                    'incoming' if msg.get('sender_type') == 'user'
-                    else 'outgoing' if msg.get('sender_type') == 'gpt'
-                    else None
+                    'outgoing' if msg.get('sender_type') == 'gpt' else None
                 )
-                # Only return coach->user (outgoing) as lastCoachMessage
                 if direction == 'outgoing':
-                    last_message = {
-                        "id": msg['chat_id'],            # Changed from 'id' to 'chat_id'
-                        "text": msg.get('content', msg.get('message_text', '')),  # Support both new and old schema
+                    return {
+                        "id": msg['chat_id'],
+                        "text": msg.get('content', msg.get('message_text', '')),
                         "timestamp": msg['created_at'],
                         "read": msg.get('read_in_app', False)
                     }
         except Exception as e:
             logger.warning(f"Could not fetch coach messages: {e}")
-            last_message = None
-        
-        # Get today's insight
+        return None
+
+    def fetch_today_insight():
         try:
-            # Use created_at range to avoid hard dependency on insight_date column.
-            today = datetime.now(timezone.utc).date()
-            start_of_day = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).isoformat()
-            end_of_day = (datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)).isoformat()
-            # Fetch today's insights, excluding dismissed ones via insight_interactions
-            insights_response = (
+            insights_resp = (
                 supabase.table('insights')
-                .select('*')
+                .select('id,title,body,insight_type,actionable')
                 .eq('user_id', user_id)
                 .gte('created_at', start_of_day)
                 .lt('created_at', end_of_day)
@@ -134,155 +183,149 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
                 .limit(5)
                 .execute()
             )
+            if not insights_resp.data:
+                return None
 
-            today_insight = None
-            if insights_response.data:
-                # Get dismissed insight IDs from insight_interactions
-                dismissed_response = (
-                    supabase.table('insight_interactions')
-                    .select('insight_id')
-                    .eq('user_id', user_id)
-                    .eq('interaction_type', 'dismissed')
-                    .execute()
-                )
-                dismissed_ids = {r['insight_id'] for r in (dismissed_response.data or [])}
+            dismissed_resp = (
+                supabase.table('insight_interactions')
+                .select('insight_id')
+                .eq('user_id', user_id)
+                .eq('interaction_type', 'dismissed')
+                .execute()
+            )
+            dismissed_ids = {r['insight_id'] for r in (dismissed_resp.data or [])}
 
-                # Find the first non-dismissed insight
-                for insight in insights_response.data:
-                    if insight['id'] not in dismissed_ids:
-                        today_insight = {
-                            "id": insight['id'],
-                            "title": insight['title'],
-                            "body": insight['body'],
-                            "category": insight['insight_type'],
-                            "actionable": insight.get('actionable', False)
-                        }
-                        break
+            for insight in insights_resp.data:
+                if insight['id'] not in dismissed_ids:
+                    return {
+                        "id": insight['id'],
+                        "title": insight['title'],
+                        "body": insight['body'],
+                        "category": insight['insight_type'],
+                        "actionable": insight.get('actionable', False)
+                    }
         except Exception as e:
             logger.warning(f"Could not fetch insights: {e}")
-            today_insight = None
-        
-        # Get user streak (simplified schema only)
-        current_streak = 0
+        return None
+
+    def fetch_streak():
         try:
-            streak_response = (
+            resp = (
                 supabase.table('user_streaks')
                 .select('current_streak')
                 .eq('user_id', user_id)
                 .limit(1)
                 .execute()
             )
-            if streak_response.data and len(streak_response.data) > 0:
-                current_streak = streak_response.data[0].get('current_streak', 0)
+            if resp.data and len(resp.data) > 0:
+                return resp.data[0].get('current_streak', 0)
         except Exception as e:
             logger.warning(f"Could not fetch streak: {e}")
-            current_streak = 0
-        
-        # Get today's completed check-ins count
+        return 0
+
+    def fetch_checkins():
         try:
-            checkins_response = (
+            resp = (
                 supabase.table('daily_stats')
                 .select('check_ins')
                 .eq('user_id', user_id)
-                .eq('stat_date', date.today().isoformat())
+                .eq('stat_date', today_utc.isoformat())
                 .limit(1)
                 .execute()
             )
-            completed_today = 0
-            if checkins_response.data:
-                completed_today = checkins_response.data[0].get('check_ins', 0)
+            if resp.data:
+                return resp.data[0].get('check_ins', 0)
         except Exception as e:
             logger.warning(f"Could not fetch check-ins: {e}")
-            completed_today = 0
-        
-        # Get user's sleep data from health_metrics (last night)
-        # Sleep is attributed to the wake date by the mobile app
-        # Mobile stores dates in UTC, so we need to query using UTC dates
+        return 0
+
+    def fetch_sleep():
         try:
-            from datetime import timezone as tz
-            now_utc = datetime.now(tz.utc)
-            today_utc = now_utc.date()
-
-            # Query for today's date (UTC midnight to midnight)
-            start = datetime.combine(today_utc, datetime.min.time(), tzinfo=tz.utc).isoformat()
-            end = datetime.combine(today_utc + timedelta(days=1), datetime.min.time(), tzinfo=tz.utc).isoformat()
-
-            logger.info(f"Querying sleep for user {user_id}: {start} to {end}")
-
-            sleep_response = (
+            # Try today first
+            resp = (
                 supabase.table('health_metrics')
                 .select('value,recorded_at')
                 .eq('user_id', user_id)
                 .eq('metric_type', 'sleep_duration')
-                .gte('recorded_at', start)
-                .lt('recorded_at', end)
+                .gte('recorded_at', start_of_day)
+                .lt('recorded_at', end_of_day)
                 .order('recorded_at', desc=True)
+                .limit(1)
                 .execute()
             )
-            sleep_hours = None
-            if sleep_response.data:
-                sleep_hours = round(float(sleep_response.data[0]['value']), 2)
-                logger.info(f"Found today's sleep: {sleep_hours}h")
-            else:
-                # Fallback: try yesterday's window
-                start_fallback = datetime.combine(today_utc - timedelta(days=1), datetime.min.time(), tzinfo=tz.utc).isoformat()
-                end_fallback = start  # today's start
-                logger.info(f"No today sleep, trying yesterday: {start_fallback} to {end_fallback}")
-                sleep_response = (
-                    supabase.table('health_metrics')
-                    .select('value,recorded_at')
-                    .eq('user_id', user_id)
-                    .eq('metric_type', 'sleep_duration')
-                    .gte('recorded_at', start_fallback)
-                    .lt('recorded_at', end_fallback)
-                    .order('recorded_at', desc=True)
-                    .execute()
-                )
-                if sleep_response.data:
-                    sleep_hours = round(float(sleep_response.data[0]['value']), 2)
-                    logger.info(f"Found yesterday's sleep: {sleep_hours}h")
-                else:
-                    # Last resort: get most recent sleep data from last 7 days
-                    week_ago = datetime.combine(today_utc - timedelta(days=7), datetime.min.time(), tzinfo=tz.utc).isoformat()
-                    sleep_response = (
-                        supabase.table('health_metrics')
-                        .select('value,recorded_at')
-                        .eq('user_id', user_id)
-                        .eq('metric_type', 'sleep_duration')
-                        .gte('recorded_at', week_ago)
-                        .order('recorded_at', desc=True)
-                        .limit(1)
-                        .execute()
-                    )
-                    if sleep_response.data:
-                        sleep_hours = round(float(sleep_response.data[0]['value']), 2)
-                        logger.info(f"Found recent sleep from {sleep_response.data[0]['recorded_at']}: {sleep_hours}h")
-        except Exception as e:
-            logger.warning(f"Could not fetch health metrics: {e}")
-            sleep_hours = None
+            if resp.data:
+                return round(float(resp.data[0]['value']), 2)
 
-        # Get user's step count for today (using UTC)
-        steps_today = None
+            # Fallback: yesterday
+            resp = (
+                supabase.table('health_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'sleep_duration')
+                .gte('recorded_at', yesterday_start)
+                .lt('recorded_at', start_of_day)
+                .order('recorded_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            if resp.data:
+                return round(float(resp.data[0]['value']), 2)
+
+            # Last resort: last 7 days
+            resp = (
+                supabase.table('health_metrics')
+                .select('value')
+                .eq('user_id', user_id)
+                .eq('metric_type', 'sleep_duration')
+                .gte('recorded_at', week_ago)
+                .order('recorded_at', desc=True)
+                .limit(1)
+                .execute()
+            )
+            if resp.data:
+                return round(float(resp.data[0]['value']), 2)
+        except Exception as e:
+            logger.warning(f"Could not fetch sleep: {e}")
+        return None
+
+    def fetch_steps():
         try:
-            from datetime import timezone as tz
-            now_utc = datetime.now(tz.utc)
-            today_utc = now_utc.date()
-            steps_start = datetime.combine(today_utc, datetime.min.time(), tzinfo=tz.utc).isoformat()
-            steps_end = datetime.combine(today_utc + timedelta(days=1), datetime.min.time(), tzinfo=tz.utc).isoformat()
-            steps_response = (
+            resp = (
                 supabase.table('health_metrics')
                 .select('value')
                 .eq('user_id', user_id)
                 .eq('metric_type', 'steps')
-                .gte('recorded_at', steps_start)
-                .lt('recorded_at', steps_end)
+                .gte('recorded_at', start_of_day)
+                .lt('recorded_at', end_of_day)
                 .order('recorded_at', desc=True)
+                .limit(1)
                 .execute()
             )
-            if steps_response.data:
-                steps_today = int(float(steps_response.data[0]['value']))
+            if resp.data:
+                return int(float(resp.data[0]['value']))
         except Exception as e:
             logger.warning(f"Could not fetch steps: {e}")
+        return None
+
+    try:
+        # Run all 6 queries in parallel
+        results = await asyncio.gather(
+            asyncio.to_thread(fetch_last_message),
+            asyncio.to_thread(fetch_today_insight),
+            asyncio.to_thread(fetch_streak),
+            asyncio.to_thread(fetch_checkins),
+            asyncio.to_thread(fetch_sleep),
+            asyncio.to_thread(fetch_steps),
+            return_exceptions=True,
+        )
+
+        # Extract results, falling back to defaults on error
+        last_message = results[0] if not isinstance(results[0], Exception) else None
+        today_insight = results[1] if not isinstance(results[1], Exception) else None
+        current_streak = results[2] if not isinstance(results[2], Exception) else 0
+        completed_today = results[3] if not isinstance(results[3], Exception) else 0
+        sleep_hours = results[4] if not isinstance(results[4], Exception) else None
+        steps_today = results[5] if not isinstance(results[5], Exception) else None
 
         return {
             "lastCoachMessage": last_message,
@@ -292,7 +335,7 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
             "sleepHours": sleep_hours,
             "stepsToday": steps_today
         }
-        
+
     except Exception as e:
         logger.error(f"Error fetching home data: {e}")
         return {
@@ -300,7 +343,8 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
             "todayInsight": None,
             "streak": 0,
             "completedToday": 0,
-            "sleepHours": None
+            "sleepHours": None,
+            "stepsToday": None
         }
 
 
@@ -309,16 +353,28 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 # ============================================
 
 @router.get("/insights")
-async def get_insights(user_id: str = Depends(get_current_user_id)):
+async def get_insights(
+    user_id: str = Depends(get_current_user_id),
+    force_refresh: bool = False,
+):
     """
     Get insights for insights screen - real user data only.
-    
+
     Optimizations:
     1. Calculate wellness score ONCE and pass to generate_insights()
-    2. This avoids duplicate calculation that was causing 2x workload
+    2. Cache result for 2 hours to avoid expensive recalculation
     """
     try:
-        # Calculate wellness score ONCE (this is cached, so subsequent calls are fast)
+        from backend.utils.cache import get_cache, insights_key
+
+        # Check cache first (2-hour TTL)
+        if not force_refresh:
+            cache = get_cache()
+            cache_key = insights_key(user_id, "insights_screen")
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
+
         from backend.services.wellness_analytics_service import wellness_analytics_service
         wellness_score = await wellness_analytics_service.calculate_wellness_score(user_id)
         
@@ -365,7 +421,7 @@ async def get_insights(user_id: str = Depends(get_current_user_id)):
         
         saved_count = len(saved_response.data) if saved_response.data else 0
         
-        return {
+        result = {
             "wellnessScore": {
                 "overall": wellness_score.overall,
                 "sleep": wellness_score.sleep,
@@ -380,7 +436,14 @@ async def get_insights(user_id: str = Depends(get_current_user_id)):
             "actionable": actionable,
             "savedCount": saved_count
         }
-        
+
+        # Cache for 2 hours
+        cache = get_cache()
+        cache_key = insights_key(user_id, "insights_screen")
+        cache.set(cache_key, result, ttl_seconds=7200)
+
+        return result
+
     except Exception as e:
         logger.error(f"Error fetching insights: {e}")
         raise DatabaseError("Failed to fetch insights", original_error=e)
@@ -739,228 +802,6 @@ async def get_latest_metrics(user_id: str = Depends(get_current_user_id)):
         raise DatabaseError("Failed to fetch latest metrics", original_error=e)
 
 
-@router.get("/insights/quick-stats")
-async def get_quick_stats(user_id: str = Depends(get_current_user_id)):
-    """
-    Get aggregated quick stats for the insights dashboard.
-
-    Returns:
-        - energy: current, avg this week, trend
-        - sleep: last night, avg this week, consistency
-        - mood: dominant mood, volatility
-        - streak: current streak, completion rate
-    """
-    try:
-        supabase = get_supabase_client()
-        now = datetime.now(timezone.utc)
-        week_ago = (now - timedelta(days=7)).isoformat()
-        two_weeks_ago = (now - timedelta(days=14)).isoformat()
-
-        # Helper to get mood label
-        def get_mood_label(value: float) -> str:
-            if value >= 4.5:
-                return 'very_happy'
-            elif value >= 3.5:
-                return 'happy'
-            elif value >= 2.5:
-                return 'neutral'
-            elif value >= 1.5:
-                return 'sad'
-            return 'very_sad'
-
-        # Get energy stats
-        energy_stats = {
-            'current': None,
-            'avg_this_week': None,
-            'avg_last_week': None,
-            'best_time': None,
-            'trend': 'stable'
-        }
-
-        try:
-            # Current energy (most recent)
-            current_energy = (
-                supabase.table('user_metrics')
-                .select('value')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'energy')
-                .order('logged_at', desc=True)
-                .limit(1)
-                .execute()
-            )
-            if current_energy.data:
-                energy_stats['current'] = float(current_energy.data[0]['value'])
-
-            # This week's energy average
-            week_energy = (
-                supabase.table('user_metrics')
-                .select('value')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'energy')
-                .gte('logged_at', week_ago)
-                .execute()
-            )
-            if week_energy.data:
-                values = [float(r['value']) for r in week_energy.data]
-                energy_stats['avg_this_week'] = round(sum(values) / len(values), 1)
-
-            # Last week's energy average
-            last_week_energy = (
-                supabase.table('user_metrics')
-                .select('value')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'energy')
-                .gte('logged_at', two_weeks_ago)
-                .lt('logged_at', week_ago)
-                .execute()
-            )
-            if last_week_energy.data:
-                values = [float(r['value']) for r in last_week_energy.data]
-                energy_stats['avg_last_week'] = round(sum(values) / len(values), 1)
-
-            # Calculate trend
-            if energy_stats['avg_this_week'] and energy_stats['avg_last_week']:
-                diff = energy_stats['avg_this_week'] - energy_stats['avg_last_week']
-                if diff > 0.3:
-                    energy_stats['trend'] = 'up'
-                elif diff < -0.3:
-                    energy_stats['trend'] = 'down'
-
-        except Exception as e:
-            logger.warning(f"Error calculating energy stats: {e}")
-
-        # Get sleep stats
-        sleep_stats = {
-            'last_night': None,
-            'avg_this_week': None,
-            'consistency_score': None,
-            'trend': 'stable'
-        }
-
-        try:
-            # Last night's sleep
-            last_sleep = (
-                supabase.table('user_metrics')
-                .select('value')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'sleep')
-                .order('logged_at', desc=True)
-                .limit(1)
-                .execute()
-            )
-            if last_sleep.data:
-                sleep_stats['last_night'] = float(last_sleep.data[0]['value'])
-
-            # This week's sleep
-            week_sleep = (
-                supabase.table('user_metrics')
-                .select('value')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'sleep')
-                .gte('logged_at', week_ago)
-                .execute()
-            )
-            if week_sleep.data:
-                values = [float(r['value']) for r in week_sleep.data]
-                avg = sum(values) / len(values)
-                sleep_stats['avg_this_week'] = round(avg, 1)
-
-                # Calculate consistency (100 - stddev * 20, clamped to 0-100)
-                if len(values) > 1:
-                    mean = sum(values) / len(values)
-                    variance = sum((x - mean) ** 2 for x in values) / len(values)
-                    stddev = variance ** 0.5
-                    consistency = max(0, min(100, int(100 - stddev * 20)))
-                    sleep_stats['consistency_score'] = consistency
-
-        except Exception as e:
-            logger.warning(f"Error calculating sleep stats: {e}")
-
-        # Get mood stats
-        mood_stats = {
-            'dominant': None,
-            'consistency': 'stable'
-        }
-
-        try:
-            week_mood = (
-                supabase.table('user_metrics')
-                .select('value')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'mood')
-                .gte('logged_at', week_ago)
-                .execute()
-            )
-            if week_mood.data:
-                values = [float(r['value']) for r in week_mood.data]
-
-                # Dominant mood (mode of rounded values)
-                rounded = [round(v) for v in values]
-                from collections import Counter
-                mode = Counter(rounded).most_common(1)[0][0]
-                mood_stats['dominant'] = get_mood_label(mode)
-
-                # Volatility check
-                if len(values) > 1:
-                    mean = sum(values) / len(values)
-                    variance = sum((x - mean) ** 2 for x in values) / len(values)
-                    stddev = variance ** 0.5
-                    mood_stats['consistency'] = 'volatile' if stddev > 0.8 else 'stable'
-
-        except Exception as e:
-            logger.warning(f"Error calculating mood stats: {e}")
-
-        # Get streak stats
-        streak_stats = {
-            'current': 0,
-            'completion_rate_this_week': 0
-        }
-
-        try:
-            streak_response = (
-                supabase.table('user_streaks')
-                .select('current_streak')
-                .eq('user_id', user_id)
-                .limit(1)
-                .execute()
-            )
-            if streak_response.data:
-                streak_stats['current'] = streak_response.data[0].get('current_streak', 0)
-
-            # Get commitment completion rate this week
-            commitments = (
-                supabase.table('commitments')
-                .select('status')
-                .eq('user_id', user_id)
-                .gte('created_at', week_ago)
-                .execute()
-            )
-            if commitments.data:
-                total = len(commitments.data)
-                completed = len([c for c in commitments.data if c['status'] == 'completed'])
-                streak_stats['completion_rate_this_week'] = round(completed / total, 2) if total > 0 else 0
-
-        except Exception as e:
-            logger.warning(f"Error calculating streak stats: {e}")
-
-        return {
-            'energy': energy_stats,
-            'sleep': sleep_stats,
-            'mood': mood_stats,
-            'streak': streak_stats
-        }
-
-    except Exception as e:
-        logger.error(f"Error fetching quick stats: {e}")
-        # Return empty stats on error - don't crash
-        return {
-            'energy': {'current': None, 'avg_this_week': None, 'avg_last_week': None, 'best_time': None, 'trend': 'stable'},
-            'sleep': {'last_night': None, 'avg_this_week': None, 'consistency_score': None, 'trend': 'stable'},
-            'mood': {'dominant': None, 'consistency': 'stable'},
-            'streak': {'current': 0, 'completion_rate_this_week': 0}
-        }
-
-
 # ============================================
 # COMMITMENT PATTERN INSIGHTS ENDPOINTS
 # ============================================
@@ -1023,72 +864,6 @@ async def get_health_insights(user_id: str = Depends(get_current_user_id)):
         }
 
 
-@router.get("/debug/health-data")
-async def debug_health_data(user_id: str = Depends(get_current_user_id)):
-    """
-    Debug endpoint to check what health data exists for the user.
-    """
-    try:
-        supabase = get_supabase_client()
-        from datetime import timedelta, timezone as tz
-
-        today = datetime.now(tz.utc).date()
-        start_date = (today - timedelta(days=14)).isoformat()
-
-        # Get raw health_metrics data
-        raw_response = (
-            supabase.table("health_metrics")
-            .select("metric_type,value,recorded_at,source")
-            .eq("user_id", user_id)
-            .gte("recorded_at", start_date)
-            .order("recorded_at", desc=True)
-            .limit(50)
-            .execute()
-        )
-        raw_data = raw_response.data or []
-
-        # Try to get view data
-        view_data = []
-        view_error = None
-        try:
-            view_response = (
-                supabase.table("health_metrics_daily")
-                .select("*")
-                .eq("user_id", user_id)
-                .gte("date", start_date)
-                .order("date", desc=True)
-                .limit(14)
-                .execute()
-            )
-            view_data = view_response.data or []
-        except Exception as e:
-            view_error = str(e)
-
-        # Summarize by metric type
-        metrics_summary = {}
-        for row in raw_data:
-            mt = row.get("metric_type")
-            if mt not in metrics_summary:
-                metrics_summary[mt] = {"count": 0, "latest_value": None, "latest_date": None}
-            metrics_summary[mt]["count"] += 1
-            if metrics_summary[mt]["latest_value"] is None:
-                metrics_summary[mt]["latest_value"] = row.get("value")
-                metrics_summary[mt]["latest_date"] = row.get("recorded_at")
-
-        return {
-            "user_id": user_id,
-            "date_range": {"start": start_date, "end": today.isoformat()},
-            "raw_metrics_count": len(raw_data),
-            "metrics_summary": metrics_summary,
-            "view_rows_count": len(view_data),
-            "view_error": view_error,
-            "sample_raw_data": raw_data[:5],
-            "sample_view_data": view_data[:5],
-        }
-
-    except Exception as e:
-        logger.error(f"Error in debug endpoint: {e}")
-        return {"error": str(e)}
 
 
 @router.post("/insights/{insight_id}/reaction")
@@ -1857,8 +1632,8 @@ class FeedbackRequest(BaseModel):
 
 
 @router.post("/feedback")
-async def submit_feedback(request: FeedbackRequest):
-    """Submit user feedback - stores in database and can be emailed."""
+async def submit_feedback(request: FeedbackRequest, user_id: str = Depends(get_current_user_id)):
+    """Submit user feedback - stores in database. Requires authentication."""
     try:
         # Store feedback in database
         feedback_data = {
