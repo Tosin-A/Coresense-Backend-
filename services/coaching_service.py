@@ -63,7 +63,6 @@ class CoachingContext:
     user_name: str
     current_streak: int
     longest_streak: int
-    active_commitments: List[str]
     attachment_level: str = "initial"
     relationship_stage: str = "initial"
     communication_preferences: Dict[str, Any] = None
@@ -351,7 +350,6 @@ class UnifiedCoachingService:
                 user_name=essential_context.user_name,
                 current_streak=essential_context.current_streak,
                 longest_streak=essential_context.longest_streak,
-                active_commitments=essential_context.active_commitments,
                 **coaching_context
             )
             
@@ -362,7 +360,6 @@ class UnifiedCoachingService:
                 user_name="User",
                 current_streak=0,
                 longest_streak=0,
-                active_commitments=[]
             )
     
     async def get_coaching_insights(self, user_id: str) -> Dict[str, Any]:
@@ -382,14 +379,12 @@ class UnifiedCoachingService:
                     "user_name": context.user_name,
                     "current_streak": context.current_streak,
                     "longest_streak": context.longest_streak,
-                    "active_commitments": context.active_commitments,
                     "attachment_level": context.attachment_level,
                     "relationship_stage": context.relationship_stage
                 },
                 "insights": {
                     "engagement_level": self._calculate_engagement_level(usage_stats),
                     "streak_progress": self._calculate_streak_progress(context),
-                    "commitment_adherence": self._calculate_commitment_adherence(context),
                     "coaching_effectiveness": self._calculate_effectiveness(usage_stats)
                 },
                 "recommendations": self._generate_recommendations(context, usage_stats, patterns),
@@ -510,7 +505,7 @@ class UnifiedCoachingService:
     # Allowed context keys to prevent injection of unexpected data
     ALLOWED_CONTEXT_KEYS = {
         "user_state", "conversation_context", "health_context", "time_context",
-        "user_name", "current_streak", "longest_streak", "active_commitments",
+        "user_name", "current_streak", "longest_streak",
         "attachment_level", "relationship_stage", "communication_preferences",
     }
 
@@ -629,12 +624,6 @@ class UnifiedCoachingService:
             "next_milestone": context.current_streak + 1
         }
     
-    def _calculate_commitment_adherence(self, context: CoachingContext) -> float:
-        """Calculate commitment adherence score"""
-        if not context.active_commitments:
-            return 0.5
-        return min(len(context.active_commitments) * 0.2, 1.0)
-    
     def _calculate_effectiveness(self, usage_stats: Dict[str, Any]) -> float:
         """Calculate coaching effectiveness score"""
         messages_used = usage_stats.get('messages_used', 0)
@@ -655,9 +644,6 @@ class UnifiedCoachingService:
         # Add streak bonus
         base_score += min(streak * 0.05, 0.3)
         
-        # Add commitment bonus
-        base_score += min(len(context.active_commitments) * 0.1, 0.2)
-        
         return min(base_score, 1.0)
     
     def _generate_recommendations(self, context: CoachingContext, usage_stats: Dict[str, Any], patterns: Dict[str, Any]) -> List[str]:
@@ -666,9 +652,6 @@ class UnifiedCoachingService:
         
         if context.current_streak < 3:
             recommendations.append("Focus on building consistency with daily check-ins")
-        
-        if not context.active_commitments:
-            recommendations.append("Set 1-2 specific, achievable commitments")
         
         if usage_stats.get('messages_used', 0) < 10:
             recommendations.append("Engage more with the coach for better results")

@@ -653,18 +653,6 @@ async def get_quick_stats(user_id: str = Depends(get_current_user_id)):
             )
             if streak_response.data:
                 streak_stats['current'] = streak_response.data[0].get('current_streak', 0)
-
-            commitments = (
-                supabase.table('commitments')
-                .select('status')
-                .eq('user_id', user_id)
-                .gte('created_at', week_ago)
-                .execute()
-            )
-            if commitments.data:
-                total = len(commitments.data)
-                completed = len([c for c in commitments.data if c['status'] == 'completed'])
-                streak_stats['completion_rate_this_week'] = round(completed / total, 2) if total > 0 else 0
         except Exception as e:
             logger.warning(f"Error calculating streak stats: {e}")
 
@@ -803,45 +791,11 @@ async def get_latest_metrics(user_id: str = Depends(get_current_user_id)):
 
 
 # ============================================
-# COMMITMENT PATTERN INSIGHTS ENDPOINTS
+# HEALTH PATTERN INSIGHTS ENDPOINTS
 # ============================================
 
 class InsightReactionRequest(BaseModel):
     helpful: bool
-
-
-@router.get("/insights/commitment-patterns")
-async def get_commitment_insights(user_id: str = Depends(get_current_user_id)):
-    """
-    Get commitment-pattern-focused insights with AI coach interpretation.
-
-    Returns:
-        - coach_summary: Overall coach summary (if enough data)
-        - patterns: List of pattern insights (max 5)
-        - has_enough_data: Whether user has enough data for insights
-        - days_until_enough_data: Days needed if not enough data
-    """
-    try:
-        from backend.services.commitment_insights_engine import commitment_insights_engine
-
-        result = await commitment_insights_engine.get_active_insights(user_id)
-        return result
-
-    except Exception as e:
-        logger.error(f"Error fetching commitment insights: {e}")
-        # Return graceful fallback - never crash
-        return {
-            "coach_summary": None,
-            "patterns": [],
-            "has_enough_data": False,
-            "days_until_enough_data": 3
-        }
-
-
-
-# ============================================
-# HEALTH PATTERN INSIGHTS ENDPOINTS
-# ============================================
 
 @router.get("/insights/health-patterns")
 async def get_health_insights(user_id: str = Depends(get_current_user_id)):
@@ -874,79 +828,20 @@ async def record_insight_reaction(
 ):
     """Record user reaction (helpful/not helpful) to an insight."""
     try:
-        from backend.services.commitment_insights_engine import commitment_insights_engine
+        supabase = get_supabase_client()
+        interaction_type = 'helpful' if request.helpful else 'not_helpful'
 
-        success = await commitment_insights_engine.mark_insight_reaction(
-            insight_id=insight_id,
-            user_id=user_id,
-            helpful=request.helpful
-        )
+        supabase.table('insight_interactions').insert({
+            'insight_id': insight_id,
+            'user_id': user_id,
+            'interaction_type': interaction_type,
+        }).execute()
 
-        return {"success": success}
+        return {"success": True}
 
     except Exception as e:
         logger.error(f"Error recording insight reaction: {e}")
         raise DatabaseError("Failed to record reaction", original_error=e)
-
-
-# ============================================
-# COMMITMENTS ENDPOINTS
-# ============================================
-
-@router.get("/commitments")
-async def get_commitments(user_id: str = Depends(get_current_user_id)):
-    """Get active commitments. Legacy endpoint, replaced by shared_todos."""
-    return []
-
-
-@router.post("/commitments/{commitment_id}/check-in")
-async def check_in_commitment(commitment_id: str, user_id: str = Depends(get_current_user_id)):
-    """Check in on a commitment (mark as completed)."""
-    try:
-        get_supabase_client().table('commitments').update({
-            'status': 'completed',
-            'completed_at': datetime.now(timezone.utc).isoformat()
-        }).eq('id', commitment_id).eq('user_id', user_id).execute()
-        
-        # Update streak (simplified schema)
-        try:
-            result = get_supabase_client().rpc('update_user_streak', {
-                'p_user_id': user_id,
-                'p_user_timezone': 'UTC'
-            }).execute()
-            logger.info(f"Streak update RPC result for {user_id}: {result.data}")
-        except Exception as streak_error:
-            logger.error(f"Could not update streak via RPC for {user_id}: {streak_error}")
-            # Try manual update as fallback
-            try:
-                today = date.today().isoformat()
-                supabase = get_supabase_client()
-                # Check if streak record exists
-                existing = supabase.table('user_streaks').select('*').eq('user_id', user_id).execute()
-                if existing.data:
-                    # Update existing record
-                    supabase.table('user_streaks').update({
-                        'current_streak': 1,
-                        'last_activity_date': today
-                    }).eq('user_id', user_id).execute()
-                    logger.info(f"Manual streak update for {user_id}")
-                else:
-                    # Insert new record
-                    supabase.table('user_streaks').insert({
-                        'user_id': user_id,
-                        'current_streak': 1,
-                        'longest_streak': 1,
-                        'last_activity_date': today
-                    }).execute()
-                    logger.info(f"Manual streak insert for {user_id}")
-            except Exception as manual_error:
-                logger.error(f"Manual streak update also failed for {user_id}: {manual_error}")
-        
-        return {"success": True}
-        
-    except Exception as e:
-        logger.error(f"Error checking in commitment: {e}")
-        raise DatabaseError("Failed to check in", original_error=e)
 
 
 # ============================================

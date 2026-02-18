@@ -30,7 +30,6 @@ class EssentialContext:
     user_name: str
     current_streak: int
     longest_streak: int
-    active_commitments: List[str]
     pending_todos: List[TodoItem]  # User's pending tasks
     user_id: str
     context_type: str  # 'initialization' | 'update' | 'minimal'
@@ -117,8 +116,6 @@ class ContextService:
     
     def format_for_assistant(self, context: EssentialContext) -> str:
         """Format context as message for Assistant"""
-        commitments_text = ", ".join(context.active_commitments) if context.active_commitments else "None"
-
         # Format todos for the assistant
         if context.pending_todos:
             todos_lines = []
@@ -135,7 +132,6 @@ class ContextService:
 Name: {context.user_name}
 Current Streak: {context.current_streak} days
 Longest Streak: {context.longest_streak} days
-Active Commitments: {commitments_text}
 
 Pending Tasks (nudge them about these):
 {todos_text}
@@ -152,9 +148,6 @@ Context Type: {context.context_type}"""
         # Get streak data
         current_streak, longest_streak = await self._get_streak_data(user_id)
 
-        # Get active commitments
-        active_commitments = await self._get_active_commitments(user_id)
-
         # Get pending todos - tasks the coach can reference and nudge about
         pending_todos = await self._get_pending_todos(user_id)
 
@@ -162,7 +155,6 @@ Context Type: {context.context_type}"""
             user_name=user_name,
             current_streak=current_streak,
             longest_streak=longest_streak,
-            active_commitments=active_commitments,
             pending_todos=pending_todos,
             user_id=user_id,
             context_type="initialization"
@@ -183,7 +175,6 @@ Context Type: {context.context_type}"""
             user_name=user_name,
             current_streak=current_streak,
             longest_streak=0,
-            active_commitments=[],
             pending_todos=pending_todos,
             user_id=user_id,
             context_type="minimal"
@@ -224,20 +215,6 @@ Context Type: {context.context_type}"""
             logger.error(f"Error getting streak data: {e}")
             return 0, 0
     
-    async def _get_active_commitments(self, user_id: str) -> List[str]:
-        """Get active commitments"""
-        try:
-            response = self.supabase.table("commitments").select(
-                "commitment_text"
-            ).eq("user_id", user_id).eq("status", "active").limit(3).execute()
-
-            if response.data:
-                return [c["commitment_text"] for c in response.data]
-            return []
-        except Exception as e:
-            logger.error(f"Error getting active commitments: {e}")
-            return []
-
     async def _get_pending_todos(self, user_id: str) -> List[TodoItem]:
         """Get pending todos for user - these are tasks the coach can nudge about"""
         try:
@@ -264,22 +241,14 @@ Context Type: {context.context_type}"""
     async def _has_significant_data_change(self, user_id: str, last_injection: str) -> bool:
         """Check if user data has changed significantly since last context injection"""
         try:
-            # Check for new commitments
-            commitments_response = self.supabase.table("commitments").select(
-                "id, created_at"
-            ).eq("user_id", user_id).gte("created_at", last_injection).execute()
-            
-            if commitments_response.data:
-                return True
-            
             # Check for streak changes
             streak_response = self.supabase.table("user_streaks").select(
                 "updated_at"
             ).eq("user_id", user_id).gte("updated_at", last_injection).execute()
-            
+
             if streak_response.data:
                 return True
-            
+
             return False
             
         except Exception as e:
@@ -305,7 +274,6 @@ Context Type: {context.context_type}"""
             user_name="User",
             current_streak=0,
             longest_streak=0,
-            active_commitments=[],
             pending_todos=[],
             user_id=user_id,
             context_type="fallback"

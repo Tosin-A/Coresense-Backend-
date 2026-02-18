@@ -134,34 +134,13 @@ class LongTermMemory(BaseModel):
         from_attributes = True
 
 
-class Commitment(BaseModel):
-    """Commitment model."""
-    id: str
-    user_id: str
-    commitment_text: str
-    extracted_from_message_id: Optional[str] = None
-    due_date: Optional[datetime] = None
-    status: str = Field(default="active", pattern=r"^(active|completed|missed|cancelled)$")
-    priority: str = Field(default="medium", pattern=r"^(low|medium|high)$")
-    completion_confidence: float = Field(default=0.5, ge=0, le=1)
-    reminder_sent: bool = Field(default=False)
-    completed_at: Optional[datetime] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime
-    updated_at: datetime
-    
-    class Config:
-        from_attributes = True
-
-
 class Win(BaseModel):
     """Win/achievement model."""
     id: str
     user_id: str
-    win_type: str = Field(..., pattern=r"^(task_completed|commitment_kept|milestone|streak|improvement|custom)$")
+    win_type: str = Field(..., pattern=r"^(task_completed|milestone|streak|improvement|custom)$")
     title: str
     description: Optional[str] = None
-    related_commitment_id: Optional[str] = None
     related_task_id: Optional[str] = None
     celebration_level: str = Field(default="normal", pattern=r"^(small|normal|big)$")
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -196,7 +175,7 @@ class MemorySummary(BaseModel):
     summary_period_end: datetime
     summary_text: str
     key_topics: List[str] = Field(default_factory=list)
-    extracted_commitments: List[str] = Field(default_factory=list)
+    extracted_topics: List[str] = Field(default_factory=list)
     extracted_wins: List[str] = Field(default_factory=list)
     mood_trend: Optional[str] = None
     message_count: int = Field(default=0)
@@ -211,7 +190,7 @@ class MemoryContext(BaseModel):
     """Complete memory context for AI coach."""
     short_term_messages: List[ConversationMemory] = Field(default_factory=list)
     long_term_memories: List[LongTermMemory] = Field(default_factory=list)
-    active_commitments: List[Commitment] = Field(default_factory=list)
+    active_tasks: List[Dict[str, Any]] = Field(default_factory=list)
     recent_wins: List[Win] = Field(default_factory=list)
     recent_mood_signals: List[MoodSignal] = Field(default_factory=list)
     engagement_context: Optional[Dict[str, Any]] = None
