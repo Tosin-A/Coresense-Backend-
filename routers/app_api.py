@@ -3,7 +3,7 @@ CoreSense App API Endpoints
 Handles all mobile app data requests with real user data only.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List
 from pydantic import BaseModel, field_validator, Field
@@ -1606,3 +1606,82 @@ async def initialize_user(request: UserInitRequest, authenticated_user_id: str =
     except Exception as e:
         logger.error(f"Error initializing user {request.user_id}: {e}")
         raise DatabaseError("Failed to initialize user", original_error=e)
+
+
+# ============================================
+# ACCOUNT DELETION ENDPOINT
+# ============================================
+
+TABLES_WITH_USER_ID = [
+    "subscriptions",
+    "insight_interactions",
+    "insights",
+    "patterns",
+    "user_message_limits",
+    "health_metrics",
+    "user_metrics",
+    "daily_stats",
+    "user_preferences",
+    "notification_preferences",
+    "device_tokens",
+    "shared_todos",
+    "user_streaks",
+    "coach_state",
+    "user_phone_numbers",
+    "journal_entries",
+    "app_feedback",
+]
+
+TABLES_WITH_USERID = [
+    "messages",
+]
+
+
+@router.delete("/account")
+async def delete_account(user_id: str = Depends(get_current_user_id)):
+    """
+    Permanently delete the authenticated user's account and all associated data.
+    Removes data from all application tables, then deletes the Supabase Auth user.
+    """
+    logger.info(f"Account deletion requested for user {user_id}")
+
+    supabase = get_supabase_client()
+    errors: list[str] = []
+
+    for table in TABLES_WITH_USER_ID:
+        try:
+            supabase.table(table).delete().eq("user_id", user_id).execute()
+        except Exception as e:
+            logger.warning(f"Could not delete from {table}: {e}")
+            errors.append(table)
+
+    for table in TABLES_WITH_USERID:
+        try:
+            supabase.table(table).delete().eq("userid", user_id).execute()
+        except Exception as e:
+            logger.warning(f"Could not delete from {table}: {e}")
+            errors.append(table)
+
+    try:
+        supabase.table("users").delete().eq("id", user_id).execute()
+    except Exception as e:
+        logger.warning(f"Could not delete from users table: {e}")
+        errors.append("users")
+
+    try:
+        supabase.auth.admin.delete_user(user_id)
+        logger.info(f"Supabase Auth user {user_id} deleted")
+    except Exception as e:
+        logger.error(f"Failed to delete Supabase Auth user {user_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete authentication account. Please contact support.",
+        )
+
+    if errors:
+        logger.warning(
+            f"Account deletion for {user_id} completed with table errors: {errors}"
+        )
+
+    logger.info(f"Account deletion completed for user {user_id}")
+    return {"success": True}
