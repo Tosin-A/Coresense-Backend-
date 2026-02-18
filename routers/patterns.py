@@ -99,7 +99,7 @@ async def get_pattern_summary(
                 "strongest_patterns": [],
                 "recommendations": [
                     "Use the app regularly to establish patterns",
-                    "Set and track commitments to see completion patterns",
+                    "Set and track tasks to see completion patterns",
                     "Maintain conversations with your coach for response analysis"
                 ]
             }
@@ -143,7 +143,7 @@ async def get_pattern_summary(
             recommendations = [
                 "Continue using the app to strengthen pattern detection",
                 "Engage regularly with your coach for personalized insights",
-                "Set commitments to analyze your follow-through patterns"
+                "Set tasks to analyze your follow-through patterns"
             ]
         
         return {

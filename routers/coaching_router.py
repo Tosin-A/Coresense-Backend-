@@ -295,7 +295,6 @@ async def get_user_coaching_context(current_user_id: str = Depends(get_current_u
                 "user_name": context.user_name,
                 "current_streak": context.current_streak,
                 "longest_streak": context.longest_streak,
-                "active_commitments": context.active_commitments,
                 "attachment_level": context.attachment_level,
                 "relationship_stage": context.relationship_stage,
                 "communication_preferences": context.communication_preferences,

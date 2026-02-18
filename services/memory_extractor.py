@@ -1,6 +1,6 @@
 """
 Memory extraction service.
-Extracts commitments, wins, mood signals, and insights from messages.
+Extracts wins, mood signals, and insights from messages.
 Uses simple pattern matching and keyword detection (can be enhanced with NLP later).
 """
 
@@ -10,13 +10,6 @@ import logging
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
-
-# Keyword patterns for commitment detection
-COMMITMENT_KEYWORDS = [
-    r'\b(will|going to|gonna|plan to|promise to|commit to|intend to|aim to)\b',
-    r'\b(tomorrow|today|this week|next week|by|before|by the end)\b',
-    r'\b(finish|complete|do|work on|start|begin|stop|quit)\b',
-]
 
 # Keyword patterns for mood detection
 POSITIVE_MOOD_KEYWORDS = [
@@ -60,101 +53,6 @@ WIN_KEYWORDS = [
     r'\b(proud|excited|happy about|celebrate|success|win|achievement)\b',
     r'\b(streak|days in a row|consistent|kept going)\b',
 ]
-
-
-def extract_commitments(message_text: str, message_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Extract commitments from a message.
-    
-    Uses pattern matching to detect commitments. Returns a list of potential commitments.
-    
-    Args:
-        message_text: Message text to analyze
-        message_id: Optional message ID for reference
-        
-    Returns:
-        List of commitment dictionaries with:
-        - commitment_text: The extracted commitment text
-        - confidence: Confidence score (0-1)
-        - due_date: Extracted due date if found
-        - priority: Detected priority level
-    """
-    commitments = []
-    message_lower = message_text.lower()
-    
-    # Check if message contains commitment indicators
-    has_commitment_language = any(
-        re.search(pattern, message_lower, re.IGNORECASE)
-        for pattern in COMMITMENT_KEYWORDS
-    )
-    
-    if not has_commitment_language:
-        return commitments
-    
-    # Try to extract time-based commitments
-    # Look for "tomorrow", "today", "this week", "by [date]"
-    time_patterns = [
-        (r'tomorrow', 0.8),
-        (r'today', 0.9),
-        (r'this week', 0.7),
-        (r'next week', 0.7),
-        (r'by (?:the end of )?(?:next )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)', 0.6),
-    ]
-    
-    detected_time = None
-    time_confidence = 0.0
-    
-    for pattern, conf in time_patterns:
-        if re.search(pattern, message_lower, re.IGNORECASE):
-            detected_time = pattern
-            time_confidence = conf
-            break
-    
-    # Extract the main action/commitment
-    # Look for sentences with commitment keywords
-    sentences = re.split(r'[.!?]+', message_text)
-    
-    for sentence in sentences:
-        sentence_lower = sentence.lower().strip()
-        if not sentence_lower:
-            continue
-        
-        # Check if this sentence has commitment language
-        has_keyword = any(
-            re.search(pattern, sentence_lower, re.IGNORECASE)
-            for pattern in COMMITMENT_KEYWORDS
-        )
-        
-        if has_keyword:
-            # Determine priority based on keywords
-            priority = "medium"
-            if any(word in sentence_lower for word in ['important', 'urgent', 'critical', 'must']):
-                priority = "high"
-            elif any(word in sentence_lower for word in ['maybe', 'might', 'think about']):
-                priority = "low"
-            
-            confidence = 0.6 + (time_confidence * 0.2)  # Base confidence + time bonus
-            
-            commitments.append({
-                "commitment_text": sentence.strip(),
-                "confidence": min(confidence, 0.95),
-                "due_date": detected_time,  # Could be parsed to actual date
-                "priority": priority,
-                "extracted_from_message_id": message_id
-            })
-    
-    # If no specific sentences found, extract whole message if it seems like a commitment
-    if not commitments and len(message_text.split()) < 30:
-        # Short messages with commitment keywords might be full commitments
-        commitments.append({
-            "commitment_text": message_text.strip(),
-            "confidence": 0.5,
-            "due_date": detected_time,
-            "priority": "medium",
-            "extracted_from_message_id": message_id
-        })
-    
-    return commitments
 
 
 def extract_mood_signal(message_text: str, message_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -368,20 +266,17 @@ def analyze_message_for_memory(
         
     Returns:
         Dictionary with extracted:
-        - commitments: List of commitments
         - mood_signal: Mood signal dict (if detected)
         - wins: List of wins
     """
     if direction != "incoming":
         # Only analyze incoming messages from users
-        return {"commitments": [], "mood_signal": None, "wins": []}
+        return {"mood_signal": None, "wins": []}
     
-    commitments = extract_commitments(message_text, message_id)
     mood_signal = extract_mood_signal(message_text, message_id)
     wins = extract_wins(message_text, message_id)
-    
+
     return {
-        "commitments": commitments,
         "mood_signal": mood_signal,
         "wins": wins
     }

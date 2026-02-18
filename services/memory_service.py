@@ -22,7 +22,6 @@ def get_memory_context(user_id: str, short_term_limit: int = 20) -> MemoryContex
     Combines:
     - Short-term: Recent conversation messages
     - Long-term: Relevant long-term memories
-    - Active commitments
     - Recent wins (for motivation)
     - Recent mood signals
     
@@ -194,7 +193,7 @@ def create_win(
     
     Args:
         user_id: User ID
-        win_type: Type of win (task_completed, commitment_kept, milestone, streak, improvement, custom)
+        win_type: Type of win (task_completed, milestone, streak, improvement, custom)
         title: Win title
         description: Win description
         related_task_id: Related task ID if applicable

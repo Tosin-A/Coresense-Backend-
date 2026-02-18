@@ -62,7 +62,7 @@ class ThreadManagementService:
                             "memory_types": {
                                 "type": "array", 
                                 "items": {"type": "string"},
-                                "default": ["preferences", "goals", "patterns", "commitments"]
+                                "default": ["preferences", "goals", "patterns"]
                             }
                         },
                         "required": ["user_id"]

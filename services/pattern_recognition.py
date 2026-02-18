@@ -18,7 +18,6 @@ class PatternType(Enum):
     USAGE_PATTERN = "usage_pattern"
     RESPONSE_PATTERN = "response_pattern"
     TIME_PATTERN = "time_pattern"
-    COMMITMENT_PATTERN = "commitment_pattern"
     STREAK_PATTERN = "streak_pattern"
     ENGAGEMENT_PATTERN = "engagement_pattern"
 
@@ -61,10 +60,6 @@ class PatternRecognitionService:
             time_pattern = await self._analyze_time_pattern(user_id, days_back)
             if time_pattern:
                 patterns.append(time_pattern)
-            
-            commitment_pattern = await self._analyze_commitment_pattern(user_id, days_back)
-            if commitment_pattern:
-                patterns.append(commitment_pattern)
             
             streak_pattern = await self._analyze_streak_pattern(user_id, days_back)
             if streak_pattern:
@@ -313,81 +308,6 @@ class PatternRecognitionService:
             
         except Exception as e:
             logger.error(f"Error analyzing time pattern: {e}")
-            return None
-    
-    async def _analyze_commitment_pattern(self, user_id: str, days_back: int) -> Optional[DetectedPattern]:
-        """Analyze commitment patterns (how user handles commitments)"""
-        try:
-            cutoff_date = (datetime.now() - timedelta(days=days_back)).isoformat()
-            
-            commitments_response = self.supabase.table('commitments').select('*').eq(
-                'user_id', user_id
-            ).gte('created_at', cutoff_date).execute()
-            
-            if not commitments_response.data:
-                return None
-            
-            commitments = commitments_response.data
-            
-            # Analyze commitment completion rates
-            completed_count = sum(1 for c in commitments if c.get('status') == 'completed')
-            total_count = len(commitments)
-            completion_rate = completed_count / total_count if total_count > 0 else 0
-            
-            patterns = []
-            insights = []
-            confidence = 0.8
-            
-            if completion_rate >= 0.8:
-                patterns.append("High commitment completion")
-                insights.append("You consistently follow through on your commitments")
-                confidence = 0.9
-            elif completion_rate >= 0.6:
-                patterns.append("Moderate commitment completion")
-                insights.append("You complete most of your commitments")
-                confidence = 0.8
-            elif completion_rate >= 0.4:
-                patterns.append("Low commitment completion")
-                insights.append("Consider making smaller, more achievable commitments")
-                confidence = 0.7
-            else:
-                patterns.append("Poor commitment completion")
-                insights.append("Focus on commitments you're confident you can keep")
-                confidence = 0.6
-            
-            # Analyze commitment types if available
-            commitment_types = {}
-            for c in commitments:
-                commitment_text = c.get('commitment_text', '').lower()
-                if 'daily' in commitment_text or 'every day' in commitment_text:
-                    commitment_types['daily'] = commitment_types.get('daily', 0) + 1
-                elif 'week' in commitment_text or 'weekly' in commitment_text:
-                    commitment_types['weekly'] = commitment_types.get('weekly', 0) + 1
-                else:
-                    commitment_types['one_time'] = commitment_types.get('one_time', 0) + 1
-            
-            if commitment_types:
-                most_common_type = max(commitment_types, key=commitment_types.get)
-                if commitment_types[most_common_type] >= total_count * 0.6:
-                    type_label = most_common_type.replace('_', ' ')
-                    patterns.append(f"Prefers {type_label} commitments")
-                    insights.append(f"You tend to make {type_label} commitments")
-            
-            if patterns:
-                return DetectedPattern(
-                    pattern_type=PatternType.COMMITMENT_PATTERN,
-                    description=f"Commitment analysis: {', '.join(patterns)}",
-                    strength=self._calculate_strength(confidence),
-                    confidence=confidence,
-                    data_points=[{"completion_rate": completion_rate, "total_commitments": total_count, "commitment_types": commitment_types}],
-                    actionable_insights=insights,
-                    detected_at=datetime.now()
-                )
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error analyzing commitment pattern: {e}")
             return None
     
     async def _analyze_streak_pattern(self, user_id: str, days_back: int) -> Optional[DetectedPattern]:

@@ -11,7 +11,6 @@ from backend.database.supabase_client import get_supabase_client, get_conversati
 from backend.services.memory_extractor import analyze_message_for_memory
 from backend.services.memory_service import (
     create_long_term_memory,
-    create_commitment,
     create_win,
     create_mood_signal
 )
@@ -30,7 +29,7 @@ def summarize_conversation_period(
     
     This function:
     1. Retrieves messages from the period
-    2. Extracts commitments, wins, mood signals
+    2. Extracts wins, mood signals
     3. Creates a summary text
     4. Stores summary and extracted insights
     
@@ -73,7 +72,6 @@ def summarize_conversation_period(
         return None
     
     # Extract insights from messages
-    extracted_commitments = []
     extracted_wins = []
     mood_signals = []
     key_topics = []
@@ -87,22 +85,6 @@ def summarize_conversation_period(
                 msg['id'],
                 msg['direction']
             )
-            
-            # Process commitments
-            for comm in analysis['commitments']:
-                extracted_commitments.append(comm['commitment_text'])
-                # Create commitment record if confidence is high enough
-                if comm.get('confidence', 0) > 0.6:
-                    try:
-                        create_commitment(
-                            user_id=user_id,
-                            commitment_text=comm['commitment_text'],
-                            extracted_from_message_id=msg['id'],
-                            priority=comm.get('priority', 'medium'),
-                            completion_confidence=comm.get('confidence', 0.6)
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to create commitment: {e}")
             
             # Process wins
             for win in analysis['wins']:
@@ -158,7 +140,6 @@ def summarize_conversation_period(
     # Create summary text
     summary_text = _generate_summary_text(
         message_count=len(period_messages),
-        commitments=extracted_commitments,
         wins=extracted_wins,
         mood_trend=mood_trend,
         key_topics=list(set(key_topics))[:10]  # Top 10 unique topics
@@ -172,7 +153,6 @@ def summarize_conversation_period(
             "summary_period_end": period_end.isoformat(),
             "summary_text": summary_text,
             "key_topics": list(set(key_topics))[:10],
-            "extracted_commitments": extracted_commitments[:20],  # Limit
             "extracted_wins": extracted_wins[:20],  # Limit
             "mood_trend": mood_trend,
             "message_count": len(period_messages)
@@ -208,28 +188,26 @@ def summarize_conversation_period(
 
 def _generate_summary_text(
     message_count: int,
-    commitments: List[str],
     wins: List[str],
     mood_trend: str,
     key_topics: List[str]
 ) -> str:
     """
     Generate summary text from extracted information.
-    
+
     Args:
         message_count: Number of messages in period
-        commitments: List of commitment texts
         wins: List of win texts
         mood_trend: Overall mood trend
         key_topics: List of key topics
-        
+
     Returns:
         Summary text
     """
     parts = []
-    
+
     parts.append(f"During this period, there were {message_count} messages exchanged.")
-    
+
     if mood_trend != "neutral":
         mood_desc = {
             "positive": "The user's mood was generally positive",
@@ -238,10 +216,7 @@ def _generate_summary_text(
             "mostly_negative": "The user's mood was mostly negative"
         }
         parts.append(mood_desc.get(mood_trend, ""))
-    
-    if commitments:
-        parts.append(f"The user made {len(commitments)} commitment(s), including: {', '.join(commitments[:3])}.")
-    
+
     if wins:
         parts.append(f"The user achieved {len(wins)} win(s), such as: {', '.join(wins[:3])}.")
     
