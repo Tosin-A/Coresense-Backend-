@@ -80,9 +80,10 @@ def summarize_conversation_period(
     
     for msg in period_messages:
         if msg['direction'] == 'incoming':
+            msg_text = msg.get('content', msg.get('message_text', ''))
             analysis = analyze_message_for_memory(
                 user_id,
-                msg['message_text'],
+                msg_text,
                 msg['id'],
                 msg['direction']
             )
@@ -134,7 +135,7 @@ def summarize_conversation_period(
                     logger.warning(f"Failed to create mood signal: {e}")
             
             # Extract topics (simple keyword extraction - can be enhanced)
-            words = msg['message_text'].lower().split()
+            words = msg_text.lower().split()
             # Add common topic words
             topic_words = [w for w in words if len(w) > 4 and w not in ['that', 'this', 'with', 'from', 'they', 'them']]
             key_topics.extend(topic_words[:3])  # Limit per message

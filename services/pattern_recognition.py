@@ -471,7 +471,7 @@ class PatternRecognitionService:
                 return None
             
             # Analyze message length (as proxy for engagement depth)
-            message_lengths = [len(msg.get('message_text', '')) for msg in user_messages]
+            message_lengths = [len(msg.get('content', msg.get('message_text', ''))) for msg in user_messages]
             avg_length = statistics.mean(message_lengths)
             
             patterns = []

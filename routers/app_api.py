@@ -148,7 +148,7 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
         try:
             resp = (
                 supabase.table('messages')
-                .select('chat_id,content,message_text,created_at,read_in_app,direction,sender_type')
+                .select('chat_id,content,created_at,read_in_app,direction,sender_type')
                 .eq('userid', user_id)
                 .or_('direction.eq.outgoing,sender_type.eq.gpt')
                 .order('created_at', desc=True)
@@ -984,7 +984,7 @@ async def get_last_coach_message(user_id: str = Depends(get_current_user_id)):
             
             return {
                 "id": msg['id'],
-                "text": msg['message_text'],
+                "text": msg.get('content', ''),
                 "timestamp": msg['created_at'],
                 "read": True
             }

@@ -196,16 +196,16 @@ async def get_chat_history(
         # Query messages from Supabase (source of truth)
         # Order by created_at descending to get newest messages first (matching OpenAI behavior)
         response = supabase.table("messages").select(
-            "id, chat_id, userid, content, direction, sender_type, created_at, metadata"
+            "id, chat_id, userid, content, direction, sender_type, created_at, metadata, run_id, assistant_temp_id"
         ).eq("userid", user_id).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
-        
+
         if not response.data:
             logger.info(f"📭 No messages found in Supabase for user: {user_id}")
             return {"messages": [], "has_more": False}
-        
+
         # Reverse to get chronological order (oldest first) for display
         messages_data = list(reversed(response.data))
-        
+
         formatted_messages = []
         for msg in messages_data:
             formatted_messages.append({
@@ -217,7 +217,9 @@ async def get_chat_history(
                 "timestamp": msg.get("created_at", datetime.now().isoformat()),
                 "created_at": msg.get("created_at", datetime.now().isoformat()),
                 "read": True,
-                "chat_id": msg.get("chat_id")
+                "chat_id": msg.get("chat_id"),
+                "run_id": msg.get("run_id"),
+                "assistant_temp_id": msg.get("assistant_temp_id"),
             })
         
         logger.info(f"✅ Loaded {len(formatted_messages)} messages from Supabase for user: {user_id}")
