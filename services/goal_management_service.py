@@ -15,9 +15,11 @@ logger = logging.getLogger(__name__)
 class GoalManagementService:
     """Service for managing wellness goals"""
     
-    def __init__(self):
-        self.supabase = get_supabase_client()
-    
+    @property
+    def supabase(self):
+        """Get the current Supabase client (always fresh after a reset)."""
+        return get_supabase_client()
+
     async def create_goal(self, user_id: str, goal_data: Dict) -> Dict:
         """Create a new wellness goal"""
         try:

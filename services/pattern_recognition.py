@@ -40,9 +40,11 @@ class DetectedPattern:
 class PatternRecognitionService:
     """Service for recognizing and analyzing user behavior patterns"""
     
-    def __init__(self):
-        self.supabase = get_supabase_client()
-    
+    @property
+    def supabase(self):
+        """Get the current Supabase client (always fresh after a reset)."""
+        return get_supabase_client()
+
     async def analyze_user_patterns(self, user_id: str, days_back: int = 30) -> List[DetectedPattern]:
         """Analyze all patterns for a user over specified time period"""
         try:

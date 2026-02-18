@@ -116,16 +116,17 @@ class SchedulerService:
     async def _reschedule_all_reminders_job(self):
         """Job: Reschedule reminders for all users with pending tasks."""
         try:
-            from backend.database.supabase_client import get_supabase_client
+            from backend.database.supabase_client import get_supabase_client, with_retry
 
-            supabase = get_supabase_client()
+            def _query():
+                sb = get_supabase_client()
+                return sb.table("shared_todos").select(
+                    "user_id"
+                ).eq("reminder_enabled", True).in_(
+                    "status", ["pending", "in_progress"]
+                ).execute()
 
-            # Get all unique users with reminder-enabled tasks
-            response = supabase.table("shared_todos").select(
-                "user_id"
-            ).eq("reminder_enabled", True).in_(
-                "status", ["pending", "in_progress"]
-            ).execute()
+            response = with_retry(_query)
 
             user_ids = set(task["user_id"] for task in response.data or [])
 

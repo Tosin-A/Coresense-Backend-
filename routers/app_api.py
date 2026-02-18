@@ -10,7 +10,7 @@ from pydantic import BaseModel, field_validator, Field
 import re
 import logging
 
-from backend.database.supabase_client import get_supabase_client
+from backend.database.supabase_client import get_supabase_client, with_retry
 from backend.services.user_initialization_service import initialize_new_user
 from backend.middleware.auth_helper import get_current_user_id
 from backend.utils.supabase_utils import extract_supabase_data, get_first_item_or_none
@@ -135,7 +135,6 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
     """
     import asyncio
 
-    supabase = get_supabase_client()
     now_utc = datetime.now(timezone.utc)
     today_utc = now_utc.date()
     start_of_day = datetime.combine(today_utc, datetime.min.time(), tzinfo=timezone.utc).isoformat()
@@ -143,18 +142,22 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
     week_ago = datetime.combine(today_utc - timedelta(days=7), datetime.min.time(), tzinfo=timezone.utc).isoformat()
     yesterday_start = datetime.combine(today_utc - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).isoformat()
 
-    # Define each query as a sync function to run in parallel via asyncio.to_thread
+    # Define each query as a sync function to run in parallel via asyncio.to_thread.
+    # Each function calls get_supabase_client() directly so a reset gives a fresh client.
     def fetch_last_message():
         try:
-            resp = (
-                supabase.table('messages')
-                .select('chat_id,content,created_at,read_in_app,direction,sender_type')
-                .eq('userid', user_id)
-                .or_('direction.eq.outgoing,sender_type.eq.gpt')
-                .order('created_at', desc=True)
-                .limit(1)
-                .execute()
-            )
+            def _query():
+                sb = get_supabase_client()
+                return (
+                    sb.table('messages')
+                    .select('chat_id,content,created_at,read_in_app,direction,sender_type')
+                    .eq('userid', user_id)
+                    .or_('direction.eq.outgoing,sender_type.eq.gpt')
+                    .order('created_at', desc=True)
+                    .limit(1)
+                    .execute()
+                )
+            resp = with_retry(_query)
             if resp.data:
                 msg = resp.data[0]
                 direction = msg.get('direction') or (
@@ -173,26 +176,32 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 
     def fetch_today_insight():
         try:
-            insights_resp = (
-                supabase.table('insights')
-                .select('id,title,body,insight_type,actionable')
-                .eq('user_id', user_id)
-                .gte('created_at', start_of_day)
-                .lt('created_at', end_of_day)
-                .order('priority', desc=True)
-                .limit(5)
-                .execute()
-            )
+            def _query_insights():
+                sb = get_supabase_client()
+                return (
+                    sb.table('insights')
+                    .select('id,title,body,insight_type,actionable')
+                    .eq('user_id', user_id)
+                    .gte('created_at', start_of_day)
+                    .lt('created_at', end_of_day)
+                    .order('priority', desc=True)
+                    .limit(5)
+                    .execute()
+                )
+            insights_resp = with_retry(_query_insights)
             if not insights_resp.data:
                 return None
 
-            dismissed_resp = (
-                supabase.table('insight_interactions')
-                .select('insight_id')
-                .eq('user_id', user_id)
-                .eq('interaction_type', 'dismissed')
-                .execute()
-            )
+            def _query_dismissed():
+                sb = get_supabase_client()
+                return (
+                    sb.table('insight_interactions')
+                    .select('insight_id')
+                    .eq('user_id', user_id)
+                    .eq('interaction_type', 'dismissed')
+                    .execute()
+                )
+            dismissed_resp = with_retry(_query_dismissed)
             dismissed_ids = {r['insight_id'] for r in (dismissed_resp.data or [])}
 
             for insight in insights_resp.data:
@@ -210,13 +219,16 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 
     def fetch_streak():
         try:
-            resp = (
-                supabase.table('user_streaks')
-                .select('current_streak')
-                .eq('user_id', user_id)
-                .limit(1)
-                .execute()
-            )
+            def _query():
+                sb = get_supabase_client()
+                return (
+                    sb.table('user_streaks')
+                    .select('current_streak')
+                    .eq('user_id', user_id)
+                    .limit(1)
+                    .execute()
+                )
+            resp = with_retry(_query)
             if resp.data and len(resp.data) > 0:
                 return resp.data[0].get('current_streak', 0)
         except Exception as e:
@@ -225,14 +237,17 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 
     def fetch_checkins():
         try:
-            resp = (
-                supabase.table('daily_stats')
-                .select('check_ins')
-                .eq('user_id', user_id)
-                .eq('stat_date', today_utc.isoformat())
-                .limit(1)
-                .execute()
-            )
+            def _query():
+                sb = get_supabase_client()
+                return (
+                    sb.table('daily_stats')
+                    .select('check_ins')
+                    .eq('user_id', user_id)
+                    .eq('stat_date', today_utc.isoformat())
+                    .limit(1)
+                    .execute()
+                )
+            resp = with_retry(_query)
             if resp.data:
                 return resp.data[0].get('check_ins', 0)
         except Exception as e:
@@ -241,47 +256,53 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 
     def fetch_sleep():
         try:
-            # Try today first
-            resp = (
-                supabase.table('health_metrics')
-                .select('value,recorded_at')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'sleep_duration')
-                .gte('recorded_at', start_of_day)
-                .lt('recorded_at', end_of_day)
-                .order('recorded_at', desc=True)
-                .limit(1)
-                .execute()
-            )
+            def _today():
+                sb = get_supabase_client()
+                return (
+                    sb.table('health_metrics')
+                    .select('value,recorded_at')
+                    .eq('user_id', user_id)
+                    .eq('metric_type', 'sleep_duration')
+                    .gte('recorded_at', start_of_day)
+                    .lt('recorded_at', end_of_day)
+                    .order('recorded_at', desc=True)
+                    .limit(1)
+                    .execute()
+                )
+            resp = with_retry(_today)
             if resp.data:
                 return round(float(resp.data[0]['value']), 2)
 
-            # Fallback: yesterday
-            resp = (
-                supabase.table('health_metrics')
-                .select('value')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'sleep_duration')
-                .gte('recorded_at', yesterday_start)
-                .lt('recorded_at', start_of_day)
-                .order('recorded_at', desc=True)
-                .limit(1)
-                .execute()
-            )
+            def _yesterday():
+                sb = get_supabase_client()
+                return (
+                    sb.table('health_metrics')
+                    .select('value')
+                    .eq('user_id', user_id)
+                    .eq('metric_type', 'sleep_duration')
+                    .gte('recorded_at', yesterday_start)
+                    .lt('recorded_at', start_of_day)
+                    .order('recorded_at', desc=True)
+                    .limit(1)
+                    .execute()
+                )
+            resp = with_retry(_yesterday)
             if resp.data:
                 return round(float(resp.data[0]['value']), 2)
 
-            # Last resort: last 7 days
-            resp = (
-                supabase.table('health_metrics')
-                .select('value')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'sleep_duration')
-                .gte('recorded_at', week_ago)
-                .order('recorded_at', desc=True)
-                .limit(1)
-                .execute()
-            )
+            def _week():
+                sb = get_supabase_client()
+                return (
+                    sb.table('health_metrics')
+                    .select('value')
+                    .eq('user_id', user_id)
+                    .eq('metric_type', 'sleep_duration')
+                    .gte('recorded_at', week_ago)
+                    .order('recorded_at', desc=True)
+                    .limit(1)
+                    .execute()
+                )
+            resp = with_retry(_week)
             if resp.data:
                 return round(float(resp.data[0]['value']), 2)
         except Exception as e:
@@ -290,17 +311,20 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 
     def fetch_steps():
         try:
-            resp = (
-                supabase.table('health_metrics')
-                .select('value')
-                .eq('user_id', user_id)
-                .eq('metric_type', 'steps')
-                .gte('recorded_at', start_of_day)
-                .lt('recorded_at', end_of_day)
-                .order('recorded_at', desc=True)
-                .limit(1)
-                .execute()
-            )
+            def _query():
+                sb = get_supabase_client()
+                return (
+                    sb.table('health_metrics')
+                    .select('value')
+                    .eq('user_id', user_id)
+                    .eq('metric_type', 'steps')
+                    .gte('recorded_at', start_of_day)
+                    .lt('recorded_at', end_of_day)
+                    .order('recorded_at', desc=True)
+                    .limit(1)
+                    .execute()
+                )
+            resp = with_retry(_query)
             if resp.data:
                 return int(float(resp.data[0]['value']))
         except Exception as e:

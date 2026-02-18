@@ -40,9 +40,11 @@ class InsightGenerationService:
     
     CACHE_TTL_SECONDS = 1800  # 30 minutes
     
-    def __init__(self):
-        self.supabase = get_supabase_client()
-    
+    @property
+    def supabase(self):
+        """Get the current Supabase client (always fresh after a reset)."""
+        return get_supabase_client()
+
     async def generate_insights(
         self, 
         user_id: str, 

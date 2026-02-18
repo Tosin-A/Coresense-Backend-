@@ -46,9 +46,11 @@ class ContextService:
     - No expensive comprehensive context fetching
     """
     
-    def __init__(self):
-        self.supabase = get_supabase_client()
-    
+    @property
+    def supabase(self):
+        """Get the current Supabase client (always fresh after a reset)."""
+        return get_supabase_client()
+
     async def get_essential_context(self, user_id: str, context_type: str = "minimal") -> EssentialContext:
         """Get essential context only - this replaces get_comprehensive_context()"""
         try:

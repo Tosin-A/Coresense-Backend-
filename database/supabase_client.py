@@ -3,10 +3,11 @@ Supabase database client singleton.
 Provides typed access to Supabase tables.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, TypeVar, Callable
 from datetime import datetime
 from supabase import create_client, Client
 import logging
+import threading
 
 from backend.config import get_settings
 from backend.utils.supabase_utils import (
@@ -18,21 +19,63 @@ from backend.utils.exceptions import DatabaseError, NotFoundError
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
 
 # Global Supabase client instance
 _supabase_client: Optional[Client] = None
+_client_lock = threading.Lock()
+
+# Connection error signatures that indicate a stale HTTP/2 connection
+_CONNECTION_ERROR_MARKERS = (
+    "ConnectionTerminated",
+    "RemoteProtocolError",
+    "ConnectionReset",
+    "ConnectionRefused",
+    "ConnectionAborted",
+)
+
+
+def _create_client() -> Client:
+    """Create a fresh Supabase client."""
+    settings = get_settings()
+    return create_client(settings.supabase_url, settings.supabase_service_key)
 
 
 def get_supabase_client() -> Client:
     """Get singleton Supabase client instance."""
     global _supabase_client
     if _supabase_client is None:
-        settings = get_settings()
-        _supabase_client = create_client(
-            settings.supabase_url,
-            settings.supabase_service_key
-        )
+        with _client_lock:
+            if _supabase_client is None:
+                _supabase_client = _create_client()
     return _supabase_client
+
+
+def _reset_client() -> Client:
+    """Reset the singleton client after a connection error."""
+    global _supabase_client
+    with _client_lock:
+        logger.warning("Resetting Supabase client due to connection error")
+        _supabase_client = _create_client()
+        return _supabase_client
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    """Check if an exception is a stale connection error."""
+    error_str = str(exc)
+    return any(marker in error_str for marker in _CONNECTION_ERROR_MARKERS)
+
+
+def with_retry(fn: Callable[[], T]) -> T:
+    """Execute a Supabase operation, retrying once on connection errors."""
+    try:
+        return fn()
+    except Exception as exc:
+        if _is_connection_error(exc):
+            logger.warning("Connection error detected, retrying with fresh client: %s", exc)
+            _reset_client()
+            return fn()
+        raise
 
 
 # Helper functions for querying tables

@@ -58,8 +58,12 @@ class NotificationService:
     """Service for managing waiting messages and notifications"""
 
     def __init__(self):
-        self.supabase = get_supabase_client()
         self.message_queue: List[WaitingMessage] = []
+
+    @property
+    def supabase(self):
+        """Get the current Supabase client (always fresh after a reset)."""
+        return get_supabase_client()
 
     async def queue_waiting_message(self, message: WaitingMessage) -> bool:
         """Queue a message to be sent when user becomes available"""
