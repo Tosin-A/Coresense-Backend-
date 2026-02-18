@@ -149,12 +149,14 @@ def cancel_subscription(user_id: str) -> Dict[str, Any]:
 
     _upsert_subscription(user_id, {"cancel_at_period_end": True})
     logger.info("Scheduled cancellation for user %s", user_id)
+    sub_dict = dict(sub)
+    period_end = sub_dict.get("current_period_end")
     return {
-        "status": sub.status,
+        "status": sub_dict.get("status", "active"),
         "cancel_at_period_end": True,
         "current_period_end": (
-            datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc).isoformat()
-            if sub.current_period_end
+            datetime.fromtimestamp(period_end, tz=timezone.utc).isoformat()
+            if period_end
             else None
         ),
     }
@@ -183,20 +185,22 @@ def handle_checkout_completed(session: Dict[str, Any]) -> None:
     }
 
     if sub:
+        sub_dict = dict(sub)
+        items_data = sub_dict.get("items", {}).get("data", [])
         fields["stripe_price_id"] = (
-            sub["items"]["data"][0]["price"]["id"] if sub["items"]["data"] else None
+            items_data[0]["price"]["id"] if items_data else None
         )
-        fields["current_period_start"] = (
-            datetime.fromtimestamp(sub.current_period_start, tz=timezone.utc).isoformat()
-            if sub.current_period_start
-            else None
-        )
-        fields["current_period_end"] = (
-            datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc).isoformat()
-            if sub.current_period_end
-            else None
-        )
-        fields["cancel_at_period_end"] = sub.cancel_at_period_end
+        period_start = sub_dict.get("current_period_start")
+        if period_start:
+            fields["current_period_start"] = datetime.fromtimestamp(
+                period_start, tz=timezone.utc
+            ).isoformat()
+        period_end = sub_dict.get("current_period_end")
+        if period_end:
+            fields["current_period_end"] = datetime.fromtimestamp(
+                period_end, tz=timezone.utc
+            ).isoformat()
+        fields["cancel_at_period_end"] = sub_dict.get("cancel_at_period_end", False)
 
     _upsert_subscription(user_id, fields)
     upgrade_to_pro(user_id)
