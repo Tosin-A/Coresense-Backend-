@@ -256,41 +256,8 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 
     def fetch_sleep():
         try:
-            def _today():
-                sb = get_supabase_client()
-                return (
-                    sb.table('health_metrics')
-                    .select('value,recorded_at')
-                    .eq('user_id', user_id)
-                    .eq('metric_type', 'sleep_duration')
-                    .gte('recorded_at', start_of_day)
-                    .lt('recorded_at', end_of_day)
-                    .order('recorded_at', desc=True)
-                    .limit(1)
-                    .execute()
-                )
-            resp = with_retry(_today)
-            if resp.data:
-                return round(float(resp.data[0]['value']), 2)
-
-            def _yesterday():
-                sb = get_supabase_client()
-                return (
-                    sb.table('health_metrics')
-                    .select('value')
-                    .eq('user_id', user_id)
-                    .eq('metric_type', 'sleep_duration')
-                    .gte('recorded_at', yesterday_start)
-                    .lt('recorded_at', start_of_day)
-                    .order('recorded_at', desc=True)
-                    .limit(1)
-                    .execute()
-                )
-            resp = with_retry(_yesterday)
-            if resp.data:
-                return round(float(resp.data[0]['value']), 2)
-
-            def _week():
+            # Single query: get the most recent sleep_duration from the last 7 days
+            def _query():
                 sb = get_supabase_client()
                 return (
                     sb.table('health_metrics')
@@ -302,7 +269,7 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
                     .limit(1)
                     .execute()
                 )
-            resp = with_retry(_week)
+            resp = with_retry(_query)
             if resp.data:
                 return round(float(resp.data[0]['value']), 2)
         except Exception as e:
@@ -1638,9 +1605,7 @@ async def initialize_user(request: UserInitRequest, authenticated_user_id: str =
 
 TABLES_WITH_USER_ID = [
     "subscriptions",
-    "insight_interactions",
     "insights",
-    "patterns",
     "user_message_limits",
     "health_metrics",
     "user_metrics",
@@ -1650,10 +1615,7 @@ TABLES_WITH_USER_ID = [
     "device_tokens",
     "shared_todos",
     "user_streaks",
-    "coach_state",
-    "user_phone_numbers",
-    "journal_entries",
-    "app_feedback",
+    "rate_limit_logs",
 ]
 
 TABLES_WITH_USERID = [
@@ -1665,11 +1627,26 @@ TABLES_WITH_USERID = [
 async def delete_account(user_id: str = Depends(get_current_user_id)):
     """
     Permanently delete the authenticated user's account and all associated data.
-    Removes data from all application tables, then deletes the Supabase Auth user.
+    Uses a SECURITY DEFINER database function that handles all table cleanup,
+    storage object removal, and auth.users deletion in one operation.
+    Falls back to the Python admin SDK if the RPC function is not yet deployed.
     """
     logger.info(f"Account deletion requested for user {user_id}")
 
     supabase = get_supabase_client()
+
+    # Primary path: call the database function (handles everything atomically)
+    try:
+        supabase.rpc("delete_user_account", {"target_user_id": user_id}).execute()
+        logger.info(f"Account deletion completed for user {user_id} via RPC")
+        return {"success": True}
+    except Exception as rpc_err:
+        logger.warning(
+            f"RPC delete_user_account failed for {user_id}, "
+            f"falling back to manual deletion: {rpc_err}"
+        )
+
+    # Fallback: manual table-by-table deletion + admin API
     errors: list[str] = []
 
     for table in TABLES_WITH_USER_ID:
@@ -1694,12 +1671,12 @@ async def delete_account(user_id: str = Depends(get_current_user_id)):
 
     try:
         supabase.auth.admin.delete_user(user_id)
-        logger.info(f"Supabase Auth user {user_id} deleted")
+        logger.info(f"Supabase Auth user {user_id} deleted via admin API")
     except Exception as e:
-        logger.error(f"Failed to delete Supabase Auth user {user_id}: {e}")
+        logger.error(f"Failed to delete auth user {user_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail="Failed to delete authentication account. Please contact support.",
+            detail="Unable to delete your account right now. Please try again in a moment.",
         )
 
     if errors:
