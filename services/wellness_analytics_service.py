@@ -136,7 +136,7 @@ class WellnessAnalyticsService:
         """Calculate sleep score (0-100)"""
         try:
             start_date = target_date - timedelta(days=7)
-            response = self.supabase.table('health_metrics').select('*').eq(
+            response = self.supabase.table('health_metrics').select('value,recorded_at').eq(
                 'user_id', user_id
             ).eq('metric_type', 'sleep_duration').gte(
                 'recorded_at', start_date.isoformat()
@@ -166,7 +166,7 @@ class WellnessAnalyticsService:
         """Calculate activity score (0-100)"""
         try:
             start_date = target_date - timedelta(days=7)
-            response = self.supabase.table('health_metrics').select('*').eq(
+            response = self.supabase.table('health_metrics').select('value,recorded_at').eq(
                 'user_id', user_id
             ).eq('metric_type', 'steps').gte(
                 'recorded_at', start_date.isoformat()
@@ -203,7 +203,7 @@ class WellnessAnalyticsService:
         """Calculate nutrition score (0-100)"""
         try:
             start_date = target_date - timedelta(days=7)
-            logs_response = self.supabase.table('manual_health_logs').select('*').eq(
+            logs_response = self.supabase.table('manual_health_logs').select('id').eq(
                 'user_id', user_id
             ).eq('log_type', 'nutrition').gte(
                 'logged_at', start_date.isoformat()
@@ -212,7 +212,7 @@ class WellnessAnalyticsService:
             if logs_response.data and len(logs_response.data) >= 3:
                 return 75.0
             
-            calories_response = self.supabase.table('health_metrics').select('*').eq(
+            calories_response = self.supabase.table('health_metrics').select('id').eq(
                 'user_id', user_id
             ).eq('metric_type', 'nutrition_calories').gte(
                 'recorded_at', start_date.isoformat()
@@ -233,12 +233,12 @@ class WellnessAnalyticsService:
             
             # Execute mood and stress queries in parallel
             mood_response, stress_response = await asyncio.gather(
-                self.supabase.table('manual_health_logs').select('*').eq(
+                self.supabase.table('manual_health_logs').select('value').eq(
                     'user_id', user_id
                 ).eq('log_type', 'mood').gte(
                     'logged_at', start_date.isoformat()
                 ).lte('logged_at', target_date.isoformat()).execute(),
-                self.supabase.table('manual_health_logs').select('*').eq(
+                self.supabase.table('manual_health_logs').select('value').eq(
                     'user_id', user_id
                 ).eq('log_type', 'stress').gte(
                     'logged_at', start_date.isoformat()
@@ -270,12 +270,12 @@ class WellnessAnalyticsService:
             
             # Execute both queries in parallel
             water_logs_response, water_metrics_response = await asyncio.gather(
-                self.supabase.table('manual_health_logs').select('*').eq(
+                self.supabase.table('manual_health_logs').select('value').eq(
                     'user_id', user_id
                 ).eq('log_type', 'water').gte(
                     'logged_at', start_date.isoformat()
                 ).lte('logged_at', target_date.isoformat()).execute(),
-                self.supabase.table('health_metrics').select('*').eq(
+                self.supabase.table('health_metrics').select('value').eq(
                     'user_id', user_id
                 ).eq('metric_type', 'water_intake').gte(
                     'recorded_at', start_date.isoformat()

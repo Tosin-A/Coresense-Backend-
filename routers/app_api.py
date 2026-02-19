@@ -845,7 +845,7 @@ async def get_last_coach_message(user_id: str = Depends(get_current_user_id)):
     try:
         response = (
             get_supabase_client().table('messages')
-            .select('*')
+            .select('chat_id,content,direction,sender_type,created_at,read_in_app')
             .eq('userid', user_id)
             .or_('direction.eq.outgoing,sender_type.eq.gpt')
             .order('created_at', desc=True)
@@ -896,7 +896,7 @@ async def get_coach_messages(
         response = (
             get_supabase_client()
             .table('messages')
-            .select('*')
+            .select('chat_id,content,direction,sender_type,created_at,read_in_app')
             .eq('userid', user_id)
             .order('created_at', desc=True)
             .range(offset, offset + limit - 1)
@@ -934,13 +934,13 @@ async def get_coach_messages(
 async def get_profile(user_id: str = Depends(get_current_user_id)):
     """Get user profile."""
     try:
-        response = get_supabase_client().table('users').select('*').eq('id', user_id).maybe_single().execute()
+        response = get_supabase_client().table('users').select('id,email,name,username,avatar_url,created_at').eq('id', user_id).maybe_single().execute()
         
         if response and response.data:
             user = response.data
             
             # Get phone number if exists
-            phone_response = get_supabase_client().table('user_phone_numbers').select('*').eq(
+            phone_response = get_supabase_client().table('user_phone_numbers').select('phone_number,verified').eq(
                 'user_id', user_id
             ).eq('is_primary', True).limit(1).execute()
             
@@ -1047,7 +1047,7 @@ async def update_profile(request: ProfileUpdateRequest, user_id: str = Depends(g
 async def get_preferences(user_id: str = Depends(get_current_user_id)):
     """Get user preferences."""
     try:
-        response = get_supabase_client().table('user_preferences').select('*').eq(
+        response = get_supabase_client().table('user_preferences').select('messaging_style,messaging_frequency,goal_focus_areas,check_in_time,active_hours_start,active_hours_end,healthkit_enabled,notifications_enabled,daily_report_enabled,weekly_report_enabled').eq(
             'user_id', user_id
         ).limit(1).execute()
         
@@ -1198,12 +1198,12 @@ async def get_health_summary(user_id: str = Depends(get_current_user_id)):
         week_ago = (date.today() - timedelta(days=7)).isoformat()
         
         # Get steps data
-        steps_response = get_supabase_client().table('health_metrics').select('*').eq(
+        steps_response = get_supabase_client().table('health_metrics').select('value,recorded_at').eq(
             'user_id', user_id
         ).eq('metric_type', 'steps').gte('recorded_at', week_ago).execute()
-        
+
         # Get sleep data
-        sleep_response = get_supabase_client().table('health_metrics').select('*').eq(
+        sleep_response = get_supabase_client().table('health_metrics').select('value,recorded_at').eq(
             'user_id', user_id
         ).eq('metric_type', 'sleep_duration').gte('recorded_at', week_ago).execute()
         
@@ -1311,7 +1311,7 @@ async def record_streak(
         
         response = (
             supabase.table('user_streaks')
-            .select('*')
+            .select('current_streak,longest_streak,last_activity_date')
             .eq('user_id', user_id)
             .execute()
         )
@@ -1439,7 +1439,7 @@ async def did_it(
         today = date.today().isoformat()
         
         # Check if streak record exists
-        existing = supabase.table('user_streaks').select('*').eq('user_id', user_id).execute()
+        existing = supabase.table('user_streaks').select('current_streak,longest_streak,last_activity_date').eq('user_id', user_id).execute()
         
         if existing.data and len(existing.data) > 0:
             current = existing.data[0]
@@ -1604,6 +1604,7 @@ async def initialize_user(request: UserInitRequest, authenticated_user_id: str =
 # ============================================
 
 TABLES_WITH_USER_ID = [
+    "insight_interactions",
     "subscriptions",
     "insights",
     "user_message_limits",

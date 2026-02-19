@@ -27,12 +27,12 @@ class DatabaseError(CoreSenseException):
         detail: str = "Database operation failed",
         original_error: Optional[Exception] = None
     ):
-        error_detail = detail
         if original_error:
-            error_detail = f"{detail}: {str(original_error)}"
+            import logging
+            logging.getLogger(__name__).error(f"{detail}: {original_error}", exc_info=original_error)
         super().__init__(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=error_detail
+            detail=detail
         )
 
 

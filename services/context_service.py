@@ -196,8 +196,8 @@ Context Type: {context.context_type}"""
                 response = self.supabase.table("users").select("id").eq("id", user_id).execute()
                 if response.data:
                     return "User"  # Default fallback
-            except:
-                pass
+            except Exception as inner_e:
+                logger.debug(f"Fallback user lookup also failed: {inner_e}")
             return "User"
     
     async def _get_streak_data(self, user_id: str) -> tuple[int, int]:

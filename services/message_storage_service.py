@@ -20,9 +20,6 @@ class MessageStorageService:
     to support chat history and app display.
     """
     
-    def __init__(self):
-        pass
-    
     async def store_user_message(
         self,
         user_id: str,

@@ -83,7 +83,7 @@ class TestHealthInsightsEngine:
             'SLEEP_PATTERN',
             'ACTIVITY_CONSISTENCY',
             'ENERGY_WINDOWS',
-            'CONSISTENCY'
+            'PEAK_PERFORMANCE'
         ]
 
         for pattern_type in expected_types:

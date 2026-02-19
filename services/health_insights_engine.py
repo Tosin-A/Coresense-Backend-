@@ -27,7 +27,7 @@ class PatternType(Enum):
     SLEEP_PATTERN = "sleep_pattern"
     ACTIVITY_CONSISTENCY = "activity_consistency"
     ENERGY_WINDOWS = "energy_windows"
-    CONSISTENCY = "consistency"
+    PEAK_PERFORMANCE = "peak_performance"
     # Check-in based patterns
     MOOD_PATTERN = "mood_pattern"
     CHECKIN_ENERGY_PATTERN = "checkin_energy_pattern"
@@ -101,7 +101,7 @@ class HealthInsightsEngine:
                 self._analyze_sleep_patterns(user_id, health_data, metrics_data),
                 self._analyze_energy_windows(user_id, health_data),
                 self._analyze_activity_consistency(user_id, health_data),
-                self._analyze_consistency(user_id, health_data),
+                self._analyze_peak_performance(user_id, health_data, metrics_data),
                 # Check-in based analyzers
                 self._analyze_mood_patterns(user_id, metrics_data),
                 self._analyze_checkin_energy_patterns(user_id, metrics_data, health_data),
@@ -110,7 +110,7 @@ class HealthInsightsEngine:
             )
 
             pattern_names = [
-                "sleep", "energy_windows", "activity", "consistency",
+                "sleep", "energy_windows", "activity", "peak_performance",
                 "mood", "checkin_energy", "stress"
             ]
 
@@ -134,7 +134,7 @@ class HealthInsightsEngine:
                 PatternType.MOOD_PATTERN: 3,
                 PatternType.CHECKIN_ENERGY_PATTERN: 4,
                 PatternType.STRESS_PATTERN: 5,
-                PatternType.CONSISTENCY: 6,
+                PatternType.PEAK_PERFORMANCE: 6,
             }
             insights.sort(key=lambda x: pattern_order.get(x.evidence.type, 99))
 
@@ -715,110 +715,185 @@ class HealthInsightsEngine:
 
         return {"insight": insight, "confidence": confidence}
 
-    async def _analyze_consistency(self, user_id: str, health_data: List[Dict]) -> Optional[Dict]:
-        """Analyze day-to-day consistency of sleep timing and activity across all 7 days.
-        Only surfaces when variance is notable — returns None for consistent users."""
-        sleep_timing_rows = [
-            r for r in health_data
-            if r.get("sleep_start_hour") is not None
-        ]
-        step_rows = [
-            r for r in health_data
-            if r.get("steps") is not None and float(r["steps"]) > 0
-        ]
+    async def _analyze_peak_performance(
+        self, user_id: str, health_data: List[Dict], metrics_data: List[Dict]
+    ) -> Optional[Dict]:
+        """Analyze when the user performs best by cross-correlating energy, mood,
+        stress, sleep, and activity across days of the week.
 
-        has_sleep = len(sleep_timing_rows) >= 3
-        has_steps = len(step_rows) >= 3
+        Builds a composite 'performance score' per day and surfaces the peak day(s)
+        so the user can schedule demanding work accordingly.
+        """
+        DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-        if not has_sleep and not has_steps:
+        # Collect per-day-of-week scores from all available signals
+        # Each signal contributes a 0-1 normalised score per weekday
+        dow_scores: Dict[int, List[float]] = {i: [] for i in range(7)}
+        signals_used: List[str] = []
+
+        # --- Activity (steps): higher = better ---
+        step_rows = [r for r in health_data if r.get("steps") and float(r["steps"]) > 0]
+        if len(step_rows) >= 3:
+            step_dow = self._day_of_week_avgs(step_rows, "steps")
+            max_steps = max(step_dow.values()) if step_dow else 1
+            for day_name, avg in step_dow.items():
+                idx = DOW_NAMES.index(day_name) if day_name in DOW_NAMES else -1
+                if idx >= 0 and max_steps > 0:
+                    dow_scores[idx].append(avg / max_steps)
+            signals_used.append("activity")
+
+        # --- Sleep quality: closer to 7-9h = better ---
+        sleep_rows = [r for r in health_data if r.get("sleep_duration_hours") and float(r["sleep_duration_hours"]) > 0]
+        if len(sleep_rows) >= 3:
+            sleep_dow = self._day_of_week_avgs(sleep_rows, "sleep_duration_hours")
+            for day_name, avg in sleep_dow.items():
+                idx = DOW_NAMES.index(day_name) if day_name in DOW_NAMES else -1
+                if idx >= 0:
+                    # Score: 1.0 when avg is 8h, dropping toward 0 at 4h or 12h
+                    score = max(0.0, 1.0 - abs(avg - 8.0) / 4.0)
+                    dow_scores[idx].append(score)
+            signals_used.append("sleep")
+
+        # --- Energy check-ins: higher = better (1-5 scale) ---
+        energy_rows = [r for r in metrics_data if r.get("avg_energy") is not None]
+        if len(energy_rows) >= 3:
+            energy_dow = self._day_of_week_avgs(energy_rows, "avg_energy")
+            for day_name, avg in energy_dow.items():
+                idx = DOW_NAMES.index(day_name) if day_name in DOW_NAMES else -1
+                if idx >= 0:
+                    dow_scores[idx].append(avg / 5.0)
+            signals_used.append("energy")
+
+        # --- Mood check-ins: higher = better (1-5 scale) ---
+        mood_rows = [r for r in metrics_data if r.get("avg_mood") is not None]
+        if len(mood_rows) >= 3:
+            mood_dow = self._day_of_week_avgs(mood_rows, "avg_mood")
+            for day_name, avg in mood_dow.items():
+                idx = DOW_NAMES.index(day_name) if day_name in DOW_NAMES else -1
+                if idx >= 0:
+                    dow_scores[idx].append(avg / 5.0)
+            signals_used.append("mood")
+
+        # --- Stress check-ins: lower = better (inverted, 1-5 scale) ---
+        stress_rows = [r for r in metrics_data if r.get("avg_stress") is not None]
+        if len(stress_rows) >= 3:
+            stress_dow = self._day_of_week_avgs(stress_rows, "avg_stress")
+            for day_name, avg in stress_dow.items():
+                idx = DOW_NAMES.index(day_name) if day_name in DOW_NAMES else -1
+                if idx >= 0:
+                    dow_scores[idx].append(1.0 - avg / 5.0)  # invert: low stress = high score
+            signals_used.append("stress")
+
+        # Need at least 2 signal types to produce a meaningful composite
+        if len(signals_used) < 2:
             return None
 
-        sleep_std = 0.0
-        step_cv = 0.0
-        inconsistent_metrics = []
+        # Calculate composite score per day (average of normalised signals, scaled 0-100)
+        composite: Dict[int, float] = {}
+        for dow, scores in dow_scores.items():
+            if scores:
+                composite[dow] = (sum(scores) / len(scores)) * 100
 
-        if has_sleep:
-            bedtimes = [float(r["sleep_start_hour"]) for r in sleep_timing_rows]
-            sleep_std = pstdev(bedtimes) if len(bedtimes) > 1 else 0.0
-            if sleep_std > 1.5:
-                inconsistent_metrics.append("sleep timing")
-
-        if has_steps:
-            steps = [float(r["steps"]) for r in step_rows]
-            avg_steps = sum(steps) / len(steps)
-            step_std = pstdev(steps) if len(steps) > 1 else 0.0
-            step_cv = step_std / avg_steps if avg_steps > 0 else 0.0
-            if step_cv > 0.5:
-                inconsistent_metrics.append("activity")
-
-        # Only surface when there's actually notable inconsistency
-        if not inconsistent_metrics:
+        # Need scores for at least 3 days to show a meaningful pattern
+        if len(composite) < 3:
             return None
 
-        # Pattern strength scales with how far above threshold
-        max_deviation = max(
-            sleep_std / 1.5 if has_sleep else 0,
-            step_cv / 0.5 if has_steps else 0,
-        )
-        pattern_strength = min(1.0, max(0.4, max_deviation - 1.0 + 0.4))
-        sample_size = max(len(sleep_timing_rows), len(step_rows))
+        # Find peak and trough
+        peak_dow = max(composite, key=composite.get)
+        trough_dow = min(composite, key=composite.get)
+        peak_name = DOW_NAMES[peak_dow]
+        trough_name = DOW_NAMES[trough_dow]
+        peak_score = composite[peak_dow]
+        trough_score = composite[trough_dow]
+        spread = peak_score - trough_score
+
+        # Don't surface if scores are too flat (spread < 5 points out of 100)
+        if spread < 5:
+            return None
+
+        pattern_strength = min(1.0, max(0.4, spread / 25.0))
+        sample_size = max(len(step_rows), len(energy_rows), len(mood_rows), len(stress_rows))
         confidence = self._confidence(sample_size, pattern_strength)
 
-        # Build commentary
-        parts = []
-        if "sleep timing" in inconsistent_metrics:
-            parts.append(f"bedtime varied by {sleep_std:.1f} hours")
-        if "activity" in inconsistent_metrics:
-            min_s = int(min(steps))
-            max_s = int(max(steps))
-            parts.append(f"steps ranged from {min_s:,} to {max_s:,}")
+        # Build chart values in Mon-Sun order
+        labels = DOW_NAMES
+        values = [round(composite.get(i, 0), 1) for i in range(7)]
+        highlight_index = peak_dow
 
-        if len(inconsistent_metrics) > 1:
-            insight_type = InsightType.RISK
+        # Find second-best day for richer commentary
+        sorted_days = sorted(composite.items(), key=lambda x: x[1], reverse=True)
+        runner_up_name = DOW_NAMES[sorted_days[1][0]] if len(sorted_days) > 1 else None
+
+        # What makes the peak day special?
+        peak_drivers = []
+        if "energy" in signals_used:
+            energy_dow_map = self._day_of_week_avgs(energy_rows, "avg_energy")
+            peak_energy = energy_dow_map.get(peak_name)
+            if peak_energy:
+                peak_drivers.append(f"energy hits {peak_energy:.1f}/5")
+        if "activity" in signals_used:
+            step_dow_map = self._day_of_week_avgs(step_rows, "steps")
+            peak_steps = step_dow_map.get(peak_name)
+            if peak_steps:
+                peak_drivers.append(f"{int(peak_steps):,} steps")
+        if "mood" in signals_used:
+            mood_dow_map = self._day_of_week_avgs(mood_rows, "avg_mood")
+            peak_mood = mood_dow_map.get(peak_name)
+            if peak_mood:
+                peak_drivers.append(f"mood at {peak_mood:.1f}/5")
+
+        driver_text = ", ".join(peak_drivers[:2]) if peak_drivers else "all your signals align"
+
+        # Commentary
+        if spread >= 20:
+            insight_type = InsightType.PROGRESS
             commentary = (
-                f"Your week was all over the gaff, {' and '.join(parts)}. "
-                f"When nothing's consistent it catches up to you."
+                f"{peak_name} is your day. {driver_text.capitalize()}. "
+                f"{trough_name} is your weakest at {trough_score:.0f}/100. "
+                f"Schedule the hard stuff on {peak_name}s."
             )
             action_steps = [
-                "Pick a fixed wake time and stick to it every day this week",
-                "Set a daily step floor you can hit even on rest days",
-                "Consistent routines reduce decision fatigue",
+                f"Block {peak_name} mornings for your most demanding work",
+                f"Keep {trough_name} for admin, meetings, and lighter tasks",
+                f"Protect your {peak_name} routine — whatever you're doing, keep it up",
+            ]
+        elif spread >= 10:
+            insight_type = InsightType.BEHAVIORAL
+            runner_note = f" {runner_up_name} is solid too." if runner_up_name else ""
+            commentary = (
+                f"You perform best on {peak_name}s ({peak_score:.0f}/100), "
+                f"where {driver_text}.{runner_note} "
+                f"Use this to plan your week."
+            )
+            action_steps = [
+                f"Front-load important decisions on {peak_name}s",
+                f"Use {runner_up_name or 'your second-best day'} as a backup for big tasks",
+                f"Notice what you do differently on {peak_name}s and replicate it",
             ]
         else:
             insight_type = InsightType.BEHAVIORAL
-            commentary = f"Your {inconsistent_metrics[0]} was a bit all over it this week, {parts[0]}."
-            if "sleep timing" in inconsistent_metrics:
-                action_steps = [
-                    "Try keeping your bedtime within one hour each night",
-                    "A consistent sleep schedule helps your body clock",
-                ]
-            else:
-                action_steps = [
-                    "Set a daily step minimum rather than relying on big days",
-                    "Short walks on rest days keep your baseline steady",
-                ]
+            commentary = (
+                f"{peak_name} edges out the rest at {peak_score:.0f}/100. "
+                f"The difference is subtle, but {driver_text} on that day."
+            )
+            action_steps = [
+                f"Try scheduling your toughest task on {peak_name} this week",
+                "Track how it feels compared to other days",
+            ]
 
-        # Use the most inconsistent metric for the chart
-        if "sleep timing" in inconsistent_metrics and has_sleep:
-            labels, values = self._last_7_days_series(health_data, "sleep_start_hour")
-            highlight_index = self._highlight_max_index(values)
-            trend_value = f"{sleep_std:.1f}h variation"
-        else:
-            labels, values = self._last_7_days_series(health_data, "steps")
-            highlight_index = self._highlight_min_index(values)
-            trend_value = f"CV {step_cv:.2f}"
+        trend_value = f"{peak_name} {peak_score:.0f}/100"
 
         insight = HealthInsight(
-            id=f"consistency-{user_id}-{datetime.utcnow().isoformat()}",
+            id=f"peak-perf-{user_id}-{datetime.utcnow().isoformat()}",
             type=insight_type,
-            title="Weekly Consistency",
+            title="Peak Performance",
             coach_commentary=commentary,
             evidence=PatternEvidence(
-                type=PatternType.CONSISTENCY,
+                type=PatternType.PEAK_PERFORMANCE,
                 labels=labels,
                 values=values,
                 highlight_index=highlight_index,
-                trend_direction="down" if len(inconsistent_metrics) > 1 else "stable",
+                trend_direction="up",
                 trend_value=trend_value,
             ),
             action_text="Ask Coach",
@@ -829,12 +904,16 @@ class HealthInsightsEngine:
 
         self._upsert_pattern(
             user_id=user_id,
-            pattern_type=PatternType.CONSISTENCY.value,
+            pattern_type=PatternType.PEAK_PERFORMANCE.value,
             confidence=confidence,
             pattern_data={
-                "sleep_timing_std": round(sleep_std, 2) if has_sleep else None,
-                "step_cv": round(step_cv, 2) if has_steps else None,
-                "inconsistent_metrics": inconsistent_metrics,
+                "peak_day": peak_name,
+                "peak_score": round(peak_score, 1),
+                "trough_day": trough_name,
+                "trough_score": round(trough_score, 1),
+                "spread": round(spread, 1),
+                "signals_used": signals_used,
+                "composite_scores": {DOW_NAMES[k]: round(v, 1) for k, v in composite.items()},
             },
             insight_title=insight.title,
         )
