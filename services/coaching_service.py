@@ -172,7 +172,7 @@ class UnifiedCoachingService:
                         "the gym tomorrow at 6am', 'I'm going to read for 30 minutes tonight', 'I need "
                         "to finish my report by Friday'. Do NOT call this for vague intentions like "
                         "'I should exercise more' or 'I want to be healthier'. The commitment must have "
-                        "a specific action. If the user mentions a timeframe, include it as due_date."
+                        "a specific action."
                     ),
                     "parameters": {
                         "type": "object",
@@ -193,10 +193,6 @@ class UnifiedCoachingService:
                                 "type": "string",
                                 "enum": ["low", "medium", "high"],
                                 "description": "Task priority. Default to medium."
-                            },
-                            "due_date": {
-                                "type": "string",
-                                "description": "ISO date (YYYY-MM-DD) if the user mentioned a specific day."
                             },
                             "coach_reasoning": {
                                 "type": "string",
