@@ -17,6 +17,8 @@ from backend.services.notification_service import notification_service
 
 logger = logging.getLogger(__name__)
 
+_MISFIRE_GRACE_TIME = 120
+
 
 class SchedulerService:
     """Background job scheduler for CoreSense notifications."""
@@ -31,10 +33,14 @@ class SchedulerService:
             logger.warning("Scheduler already running")
             return
 
-        self.scheduler = AsyncIOScheduler(timezone="UTC")
+        self.scheduler = AsyncIOScheduler(
+            timezone="UTC",
+            job_defaults={
+                "misfire_grace_time": _MISFIRE_GRACE_TIME,
+                "coalesce": True,
+            },
+        )
 
-        # Job 1: Process scheduled notifications every minute
-        # This sends task reminders that are due
         self.scheduler.add_job(
             self._process_notifications_job,
             trigger=IntervalTrigger(minutes=1),
@@ -44,7 +50,6 @@ class SchedulerService:
             max_instances=1,
         )
 
-        # Job 2: Check for overdue tasks every hour and send nudges
         self.scheduler.add_job(
             self._check_overdue_tasks_job,
             trigger=IntervalTrigger(hours=1),
@@ -54,7 +59,6 @@ class SchedulerService:
             max_instances=1,
         )
 
-        # Job 3: Check streak alerts daily at 8 PM UTC
         self.scheduler.add_job(
             self._check_streak_alerts_job,
             trigger=CronTrigger(hour=20, minute=0),
@@ -64,8 +68,6 @@ class SchedulerService:
             max_instances=1,
         )
 
-        # Job 4: Schedule all task reminders for all users every 15 minutes
-        # This catches any reminders that weren't scheduled at creation time
         self.scheduler.add_job(
             self._reschedule_all_reminders_job,
             trigger=IntervalTrigger(minutes=15),
@@ -126,7 +128,8 @@ class SchedulerService:
                     "status", ["pending", "in_progress"]
                 ).execute()
 
-            response = with_retry(_query)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, _query)
 
             user_ids = set(task["user_id"] for task in response.data or [])
 
