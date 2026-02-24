@@ -59,9 +59,9 @@ def initialize_new_user(user_id: str, user_email: str = None, full_name: str = N
                     "created_at": datetime.now().isoformat(),
                     "updated_at": datetime.now().isoformat()
                 }
-                
+
                 profile_result = client.table("users").insert(profile_data).execute()
-                
+
                 if profile_result.data:
                     results['initialized'].append('user_profile')
                     logger.info(f"✅ Created user profile for {user_id}")
@@ -70,8 +70,19 @@ def initialize_new_user(user_id: str, user_email: str = None, full_name: str = N
                     results['errors'].append(error_msg)
                     logger.error(f"❌ {error_msg}")
             else:
-                results['initialized'].append('user_profile_existed')
-                logger.info(f"✅ User profile already exists for {user_id}")
+                # Profile exists — update name if provided and currently missing
+                existing = profile_check.data[0]
+                if full_name and not existing.get("full_name"):
+                    client.table("users").update({
+                        "full_name": full_name,
+                        "username": full_name,
+                        "updated_at": datetime.now().isoformat()
+                    }).eq("id", user_id).execute()
+                    results['initialized'].append('user_profile_updated')
+                    logger.info(f"✅ Updated user profile name for {user_id}")
+                else:
+                    results['initialized'].append('user_profile_existed')
+                    logger.info(f"✅ User profile already exists for {user_id}")
                 
         except Exception as e:
             error_msg = f"Failed to initialize user profile: {e}"
