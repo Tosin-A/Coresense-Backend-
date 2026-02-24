@@ -1604,7 +1604,6 @@ async def initialize_user(request: UserInitRequest, authenticated_user_id: str =
 # ============================================
 
 TABLES_WITH_USER_ID = [
-    "insight_interactions",
     "subscriptions",
     "insights",
     "user_message_limits",
