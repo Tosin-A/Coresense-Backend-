@@ -44,9 +44,6 @@ BEGIN
     -- Public users table
     DELETE FROM public.users WHERE id = target_user_id;
 
-    -- Remove storage objects owned by the user
-    DELETE FROM storage.objects WHERE owner = target_user_id;
-
     -- Finally delete the auth user
     DELETE FROM auth.users WHERE id = target_user_id;
 END;

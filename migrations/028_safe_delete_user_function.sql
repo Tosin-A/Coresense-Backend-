@@ -33,9 +33,6 @@ BEGIN
     -- Public users table (has FKs pointing to it from rate_limit_logs etc.)
     DELETE FROM public.users WHERE id = target_user_id;
 
-    -- Remove storage objects owned by the user (prevents auth.users delete from failing)
-    DELETE FROM storage.objects WHERE owner = target_user_id;
-
     -- Finally delete the auth user (cascades to any remaining FK references)
     DELETE FROM auth.users WHERE id = target_user_id;
 END;
