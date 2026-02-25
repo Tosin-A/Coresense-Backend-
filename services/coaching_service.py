@@ -237,7 +237,6 @@ class UnifiedCoachingService:
                         "usage": {
                             "messages_used": usage_stats['messages_used'],
                             "messages_limit": usage_stats['messages_limit'],
-                            "is_pro": usage_stats['is_pro'],
                             "messages_remaining": usage_stats['messages_remaining'],
                             "daily_used": usage_stats['daily_used'],
                             "daily_limit": usage_stats['daily_limit'],

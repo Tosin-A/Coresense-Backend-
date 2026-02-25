@@ -126,15 +126,14 @@ class UsageStatsResponse(BaseModel):
     allowed: bool
     messages_used: int
     messages_limit: int
-    is_pro: bool
     messages_remaining: int
     usage_percentage: float
     daily_used: int = 0
-    daily_limit: int = 10
-    daily_remaining: int = 10
+    daily_limit: int = 5
+    daily_remaining: int = 5
     weekly_used: int = 0
-    weekly_limit: int = 30
-    weekly_remaining: int = 30
+    weekly_limit: int = 15
+    weekly_remaining: int = 15
     limit_type: Optional[str] = None
 
 
@@ -390,15 +389,14 @@ async def get_message_usage(
             allowed=allowed,
             messages_used=stats['messages_used'],
             messages_limit=stats['messages_limit'],
-            is_pro=stats['is_pro'],
             messages_remaining=stats['messages_remaining'],
             usage_percentage=stats['usage_percentage'],
             daily_used=stats.get('daily_used', 0),
-            daily_limit=stats.get('daily_limit', 10),
-            daily_remaining=stats.get('daily_remaining', 10),
+            daily_limit=stats.get('daily_limit', 5),
+            daily_remaining=stats.get('daily_remaining', 5),
             weekly_used=stats.get('weekly_used', 0),
-            weekly_limit=stats.get('weekly_limit', 30),
-            weekly_remaining=stats.get('weekly_remaining', 30),
+            weekly_limit=stats.get('weekly_limit', 15),
+            weekly_remaining=stats.get('weekly_remaining', 15),
             limit_type=stats.get('limit_type'),
         )
     except Exception as e:
