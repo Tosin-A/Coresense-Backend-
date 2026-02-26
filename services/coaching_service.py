@@ -202,6 +202,30 @@ class UnifiedCoachingService:
                         "required": ["user_id", "title"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "schedule_calendar_event",
+                    "description": (
+                        "Schedule an event in the user's calendar. Call this when the user commits "
+                        "to something time-specific, e.g. 'I'll go to the gym tomorrow', 'I need to "
+                        "attend a meeting on Friday at 3pm', 'I'm going to work on this project Thursday'. "
+                        "Do NOT call this for vague intentions. The app will find the best available time."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string"},
+                            "title": {"type": "string", "description": "Event title under 60 chars"},
+                            "date": {"type": "string", "description": "Target date YYYY-MM-DD"},
+                            "preferred_time": {"type": "string", "description": "Preferred time HH:MM (24h), optional"},
+                            "duration_minutes": {"type": "integer", "description": "Duration in minutes, default 60", "default": 60},
+                            "notes": {"type": "string", "description": "Optional event notes"}
+                        },
+                        "required": ["user_id", "title", "date"]
+                    }
+                }
             }
         ]
 

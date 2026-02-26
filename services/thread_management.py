@@ -147,6 +147,30 @@ class ThreadManagementService:
                         "required": ["user_id", "title"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "schedule_calendar_event",
+                    "description": (
+                        "Schedule an event in the user's calendar. Call this when the user commits "
+                        "to something time-specific, e.g. 'I'll go to the gym tomorrow', 'I need to "
+                        "attend a meeting on Friday at 3pm', 'I'm going to work on this project Thursday'. "
+                        "Do NOT call this for vague intentions. The app will find the best available time."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string"},
+                            "title": {"type": "string", "description": "Event title under 60 chars"},
+                            "date": {"type": "string", "description": "Target date YYYY-MM-DD"},
+                            "preferred_time": {"type": "string", "description": "Preferred time HH:MM (24h), optional"},
+                            "duration_minutes": {"type": "integer", "description": "Duration in minutes, default 60", "default": 60},
+                            "notes": {"type": "string", "description": "Optional event notes"}
+                        },
+                        "required": ["user_id", "title", "date"]
+                    }
+                }
             }
         ]
 
@@ -280,6 +304,8 @@ class ThreadManagementService:
                 result = await self._execute_analyze_pattern(arguments)
             elif function_name == "create_user_task":
                 result = await self._execute_create_user_task(arguments)
+            elif function_name == "schedule_calendar_event":
+                result = await self._execute_schedule_calendar_event(arguments)
             else:
                 logger.error(f"Unknown function: {function_name}")
                 return False
@@ -442,6 +468,8 @@ class ThreadManagementService:
                     result = await self._execute_analyze_pattern(arguments)
                 elif function_name == "create_user_task":
                     result = await self._execute_create_user_task(arguments)
+                elif function_name == "schedule_calendar_event":
+                    result = await self._execute_schedule_calendar_event(arguments)
                 else:
                     result = {"error": f"Unknown function: {function_name}"}
 
@@ -449,7 +477,8 @@ class ThreadManagementService:
                 if executed_functions is not None:
                     executed_functions.append({
                         "name": function_name,
-                        "arguments": arguments
+                        "arguments": arguments,
+                        "result": result
                     })
 
                 tool_outputs.append({
@@ -581,6 +610,20 @@ class ThreadManagementService:
         except Exception as e:
             logger.error(f"Error in create_user_task: {e}")
             return {"success": False, "error": str(e)}
+
+    async def _execute_schedule_calendar_event(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Calendar writes happen on-device. Return event data for the frontend to act on."""
+        return {
+            "success": True,
+            "action": "schedule_calendar_event",
+            "event_data": {
+                "title": arguments.get("title"),
+                "date": arguments.get("date"),
+                "preferred_time": arguments.get("preferred_time"),
+                "duration_minutes": arguments.get("duration_minutes", 60),
+                "notes": arguments.get("notes")
+            }
+        }
 
     def _process_completed_run(self, thread_id: str, run_id: str) -> Dict[str, Any]:
         """
