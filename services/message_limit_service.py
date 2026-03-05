@@ -3,6 +3,7 @@ Message Limit Service
 Daily/weekly message limits.
 
 Free: 5 messages/day, 15 messages/week
+Pro: 10 messages/day, 30 messages/week (IAP only)
 """
 
 from typing import Dict, Any, Optional, Tuple
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 # Limit configuration
 FREE_DAILY_LIMIT = 5
 FREE_WEEKLY_LIMIT = 15
+PRO_DAILY_LIMIT = 10
+PRO_WEEKLY_LIMIT = 30
 
 
 def _needs_daily_reset(last_reset: Optional[str]) -> bool:
@@ -223,6 +226,55 @@ def get_user_usage_stats(user_id: str) -> Dict[str, Any]:
             "usage_percentage": 0.0,
             "limit_type": None,
         }
+
+
+def upgrade_to_pro(user_id: str) -> bool:
+    """Upgrade user to Pro limits (10/day, 30/week). Called when subscription activates."""
+    try:
+        client = get_supabase_client()
+        response = client.table("user_message_limits")\
+            .update({
+                "is_pro": True,
+                "daily_limit": PRO_DAILY_LIMIT,
+                "weekly_limit": PRO_WEEKLY_LIMIT,
+                "pro_upgraded_at": datetime.now(timezone.utc).isoformat(),
+            })\
+            .eq("user_id", user_id)\
+            .execute()
+
+        if response.data and len(response.data) > 0:
+            logger.info("Upgraded user %s to Pro limits (%d/day, %d/week)", user_id, PRO_DAILY_LIMIT, PRO_WEEKLY_LIMIT)
+            return True
+
+        # User may not have a row yet; ensure one exists
+        get_user_message_limit(user_id)
+        return upgrade_to_pro(user_id)
+    except Exception as e:
+        logger.error("Failed to upgrade user %s to Pro: %s", user_id, e, exc_info=True)
+        return False
+
+
+def downgrade_from_pro(user_id: str) -> bool:
+    """Downgrade user to free limits (5/day, 15/week). Called when subscription ends."""
+    try:
+        client = get_supabase_client()
+        response = client.table("user_message_limits")\
+            .update({
+                "is_pro": False,
+                "daily_limit": FREE_DAILY_LIMIT,
+                "weekly_limit": FREE_WEEKLY_LIMIT,
+                "pro_upgraded_at": None,
+            })\
+            .eq("user_id", user_id)\
+            .execute()
+
+        success = response.data and len(response.data) > 0
+        if success:
+            logger.info("Downgraded user %s to free limits (%d/day, %d/week)", user_id, FREE_DAILY_LIMIT, FREE_WEEKLY_LIMIT)
+        return success
+    except Exception as e:
+        logger.error("Failed to downgrade user %s from Pro: %s", user_id, e, exc_info=True)
+        return False
 
 
 def reset_message_limits(user_id: str) -> bool:

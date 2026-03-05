@@ -1,12 +1,15 @@
 """
 Subscription Service
-Manages Stripe Checkout, webhooks, portal sessions, and subscription lifecycle.
+Manages Stripe Checkout, webhooks, portal sessions, IAP verification, and subscription lifecycle.
 """
 
+import base64
+import json
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 
+import httpx
 import stripe
 
 from backend.config import get_settings
@@ -14,6 +17,9 @@ from backend.database.supabase_client import get_supabase_client
 from backend.services.message_limit_service import upgrade_to_pro, downgrade_from_pro
 
 logger = logging.getLogger(__name__)
+
+APPLE_VERIFY_RECEIPT_URL = "https://buy.itunes.apple.com/verifyReceipt"
+APPLE_VERIFY_RECEIPT_SANDBOX_URL = "https://sandbox.itunes.apple.com/verifyReceipt"
 
 settings = get_settings()
 if settings.stripe_secret_key:
@@ -127,12 +133,22 @@ def get_subscription_status(user_id: str) -> Dict[str, Any]:
             "cancel_at_period_end": False,
         }
 
+    is_pro = record.get("status") == "active"
+    if is_pro and record.get("current_period_end"):
+        try:
+            end_dt = datetime.fromisoformat(record["current_period_end"].replace("Z", "+00:00"))
+            if end_dt < datetime.now(timezone.utc):
+                is_pro = False
+        except (ValueError, TypeError):
+            pass
+
     return {
-        "is_pro": record.get("status") == "active",
+        "is_pro": is_pro,
         "status": record.get("status", "inactive"),
         "current_period_end": record.get("current_period_end"),
         "cancel_at_period_end": record.get("cancel_at_period_end", False),
         "stripe_subscription_id": record.get("stripe_subscription_id"),
+        "source": record.get("source", "stripe"),
     }
 
 
@@ -301,3 +317,86 @@ def _find_by_customer(customer_id: Optional[str]) -> Optional[Dict[str, Any]]:
     if response.data and len(response.data) > 0:
         return response.data[0]
     return None
+
+
+# ---------------------------------------------------------------------------
+# In-App Purchase (Apple / Google)
+# ---------------------------------------------------------------------------
+
+def verify_apple_receipt(receipt_b64: str, product_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Verify Apple receipt with App Store.
+    Returns subscription info if valid, None otherwise.
+    """
+    secret = settings.apple_shared_secret
+    if not secret:
+        logger.error("APPLE_SHARED_SECRET not configured")
+        return None
+
+    payload = {
+        "receipt-data": receipt_b64,
+        "password": secret,
+        "exclude-old-transactions": True,
+    }
+
+    for url in [APPLE_VERIFY_RECEIPT_URL, APPLE_VERIFY_RECEIPT_SANDBOX_URL]:
+        try:
+            resp = httpx.post(url, json=payload, timeout=10)
+            data = resp.json()
+            status = data.get("status", -1)
+
+            if status == 0:
+                latest = data.get("latest_receipt_info", []) or data.get("receipt", {}).get("in_app", [])
+                for item in latest:
+                    if item.get("product_id") == product_id:
+                        exp_ms = item.get("expires_date_ms")
+                        if exp_ms:
+                            exp_dt = datetime.fromtimestamp(int(exp_ms) / 1000, tz=timezone.utc)
+                            return {
+                                "transaction_id": item.get("transaction_id"),
+                                "original_transaction_id": item.get("original_transaction_id"),
+                                "product_id": product_id,
+                                "expires_at": exp_dt.isoformat(),
+                                "is_active": exp_dt > datetime.now(timezone.utc),
+                            }
+                logger.warning("Product %s not found in receipt", product_id)
+                return None
+
+            if status == 21007:
+                continue
+            logger.warning("Apple verifyReceipt status=%s", status)
+            return None
+        except Exception as e:
+            logger.error("Apple receipt verification error: %s", e)
+            return None
+
+    return None
+
+
+def verify_iap_and_activate(user_id: str, platform: str, product_id: str, transaction_id: str, receipt: Optional[str] = None, purchase_token: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Verify IAP purchase and activate Pro for the user.
+    Returns subscription status dict.
+    """
+    if platform == "ios" and receipt:
+        sub_info = verify_apple_receipt(receipt, product_id)
+        if not sub_info or not sub_info.get("is_active"):
+            raise ValueError("Invalid or expired Apple receipt")
+
+        _upsert_subscription(user_id, {
+            "source": "apple",
+            "status": "active",
+            "apple_subscription_id": sub_info.get("original_transaction_id"),
+            "apple_transaction_id": sub_info.get("transaction_id"),
+            "apple_original_transaction_id": sub_info.get("original_transaction_id"),
+            "current_period_end": sub_info.get("expires_at"),
+            "cancel_at_period_end": False,
+        })
+        upgrade_to_pro(user_id)
+        logger.info("Activated Pro for user %s via Apple IAP", user_id)
+        return get_subscription_status(user_id)
+
+    if platform == "android" and purchase_token:
+        raise ValueError("Google Play verification not implemented yet")
+
+    raise ValueError("Invalid IAP payload: need receipt (iOS) or purchaseToken (Android)")

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     stripe_publishable_key: Optional[str] = None
     stripe_webhook_secret: Optional[str] = None
     stripe_price_id: Optional[str] = None
+
+    # Apple App Store (In-App Purchase)
+    apple_shared_secret: Optional[str] = None
     
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -54,10 +54,11 @@ class CheckoutResponse(BaseModel):
 
 
 class SubscriptionStatusResponse(BaseModel):
-    is_pro: bool
-    status: str
-    current_period_end: str | None = None
-    cancel_at_period_end: bool = False
+  is_pro: bool
+  status: str
+  current_period_end: str | None = None
+  cancel_at_period_end: bool = False
+  source: str | None = None
 
 
 class PortalResponse(BaseModel):
@@ -68,6 +69,43 @@ class CancelResponse(BaseModel):
     status: str
     cancel_at_period_end: bool
     current_period_end: str | None = None
+
+
+class VerifyIAPRequest(BaseModel):
+    platform: str
+    productId: str
+    transactionId: str
+    receipt: str | None = None
+    purchaseToken: str | None = None
+
+
+@router.post("/verify-iap", response_model=SubscriptionStatusResponse)
+async def verify_iap(
+    body: VerifyIAPRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Verify an In-App Purchase and activate Pro subscription."""
+    try:
+        result = subscription_service.verify_iap_and_activate(
+            user_id=user_id,
+            platform=body.platform,
+            product_id=body.productId,
+            transaction_id=body.transactionId,
+            receipt=body.receipt,
+            purchase_token=body.purchaseToken,
+        )
+        return SubscriptionStatusResponse(**result)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error("IAP verification error: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to verify purchase",
+        )
 
 
 @router.post("/create-checkout", response_model=CheckoutResponse)
