@@ -7,7 +7,7 @@ import base64
 import json
 import logging
 from typing import Dict, Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import stripe
@@ -138,11 +138,7 @@ def get_subscription_status(user_id: str) -> Dict[str, Any]:
         try:
             end_dt = datetime.fromisoformat(record["current_period_end"].replace("Z", "+00:00"))
             if end_dt < datetime.now(timezone.utc):
-                # Don't deactivate sandbox purchases — they expire in minutes
-                if record.get("is_sandbox"):
-                    logger.warning("[APPLE_IAP] Sandbox subscription expired but keeping Pro active for user")
-                else:
-                    is_pro = False
+                is_pro = False
         except (ValueError, TypeError):
             pass
 
@@ -413,15 +409,19 @@ def verify_iap_and_activate(user_id: str, platform: str, product_id: str, transa
         if is_sandbox and not is_active:
             logger.warning("[APPLE_IAP] Accepting expired sandbox receipt for user %s (sandbox testing)", user_id)
 
+        # For sandbox receipts, set a far-future expiry so status checks don't deactivate Pro
+        expires_at = sub_info.get("expires_at")
+        if is_sandbox and not is_active:
+            expires_at = (datetime.now(timezone.utc) + timedelta(days=365)).isoformat()
+
         _upsert_subscription(user_id, {
             "source": "apple",
             "status": "active",
             "apple_subscription_id": sub_info.get("original_transaction_id"),
             "apple_transaction_id": sub_info.get("transaction_id"),
             "apple_original_transaction_id": sub_info.get("original_transaction_id"),
-            "current_period_end": sub_info.get("expires_at"),
+            "current_period_end": expires_at,
             "cancel_at_period_end": False,
-            "is_sandbox": is_sandbox,
         })
         upgrade_to_pro(user_id)
         logger.info("Activated Pro for user %s via Apple IAP", user_id)
