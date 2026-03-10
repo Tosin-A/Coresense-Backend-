@@ -138,7 +138,11 @@ def get_subscription_status(user_id: str) -> Dict[str, Any]:
         try:
             end_dt = datetime.fromisoformat(record["current_period_end"].replace("Z", "+00:00"))
             if end_dt < datetime.now(timezone.utc):
-                is_pro = False
+                # Don't deactivate sandbox purchases — they expire in minutes
+                if record.get("is_sandbox"):
+                    logger.warning("[APPLE_IAP] Sandbox subscription expired but keeping Pro active for user")
+                else:
+                    is_pro = False
         except (ValueError, TypeError):
             pass
 
@@ -417,6 +421,7 @@ def verify_iap_and_activate(user_id: str, platform: str, product_id: str, transa
             "apple_original_transaction_id": sub_info.get("original_transaction_id"),
             "current_period_end": sub_info.get("expires_at"),
             "cancel_at_period_end": False,
+            "is_sandbox": is_sandbox,
         })
         upgrade_to_pro(user_id)
         logger.info("Activated Pro for user %s via Apple IAP", user_id)
