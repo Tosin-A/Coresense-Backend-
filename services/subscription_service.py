@@ -327,6 +327,7 @@ def verify_apple_receipt(receipt_b64: str, product_id: str) -> Optional[Dict[str
     """
     Verify Apple receipt with App Store.
     Returns subscription info if valid, None otherwise.
+    Also tracks whether the receipt was verified via sandbox.
     """
     secret = settings.apple_shared_secret
     if not secret:
@@ -341,6 +342,7 @@ def verify_apple_receipt(receipt_b64: str, product_id: str) -> Optional[Dict[str
         "exclude-old-transactions": True,
     }
 
+    is_sandbox = False
     for url in [APPLE_VERIFY_RECEIPT_URL, APPLE_VERIFY_RECEIPT_SANDBOX_URL]:
         try:
             logger.warning("[APPLE_IAP] POST %s", url)
@@ -350,6 +352,8 @@ def verify_apple_receipt(receipt_b64: str, product_id: str) -> Optional[Dict[str
             logger.warning("[APPLE_IAP] Response status=%s from %s", status, url)
 
             if status == 0:
+                if url == APPLE_VERIFY_RECEIPT_SANDBOX_URL:
+                    is_sandbox = True
                 latest = data.get("latest_receipt_info", []) or data.get("receipt", {}).get("in_app", [])
                 logger.warning("[APPLE_IAP] Found %d items in receipt, looking for product %s", len(latest), product_id)
                 for item in latest:
@@ -359,13 +363,14 @@ def verify_apple_receipt(receipt_b64: str, product_id: str) -> Optional[Dict[str
                         if exp_ms:
                             exp_dt = datetime.fromtimestamp(int(exp_ms) / 1000, tz=timezone.utc)
                             is_active = exp_dt > datetime.now(timezone.utc)
-                            logger.warning("[APPLE_IAP] Product matched: expires_at=%s, is_active=%s", exp_dt.isoformat(), is_active)
+                            logger.warning("[APPLE_IAP] Product matched: expires_at=%s, is_active=%s, is_sandbox=%s", exp_dt.isoformat(), is_active, is_sandbox)
                             return {
                                 "transaction_id": item.get("transaction_id"),
                                 "original_transaction_id": item.get("original_transaction_id"),
                                 "product_id": product_id,
                                 "expires_at": exp_dt.isoformat(),
                                 "is_active": is_active,
+                                "is_sandbox": is_sandbox,
                             }
                 logger.warning("[APPLE_IAP] Product %s not found in receipt items", product_id)
                 return None
@@ -390,8 +395,19 @@ def verify_iap_and_activate(user_id: str, platform: str, product_id: str, transa
     """
     if platform == "ios" and receipt:
         sub_info = verify_apple_receipt(receipt, product_id)
-        if not sub_info or not sub_info.get("is_active"):
-            raise ValueError("Invalid or expired Apple receipt")
+        if not sub_info:
+            raise ValueError("Invalid Apple receipt - could not verify with App Store")
+
+        # Sandbox subscriptions expire in minutes, so accept them even if expired
+        # Production subscriptions must be active
+        is_sandbox = sub_info.get("is_sandbox", False)
+        is_active = sub_info.get("is_active", False)
+
+        if not is_active and not is_sandbox:
+            raise ValueError("Apple subscription has expired")
+
+        if is_sandbox and not is_active:
+            logger.warning("[APPLE_IAP] Accepting expired sandbox receipt for user %s (sandbox testing)", user_id)
 
         _upsert_subscription(user_id, {
             "source": "apple",
