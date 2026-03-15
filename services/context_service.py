@@ -274,22 +274,22 @@ Context Type: {context.context_type}"""
             logger.error(f"Error updating context injection time: {e}")
     
     def _get_today_habit_stats_sync(self, user_id: str) -> str:
-        """Get today's habit completion stats for context injection."""
+        """Get today's recurring task completion stats for context injection."""
         try:
             from datetime import date as date_type
             today_str = date_type.today().isoformat()
 
-            # Count active habits
-            habits_resp = self.supabase.table("habits").select(
+            # Count active recurring tasks
+            tasks_resp = self.supabase.table("shared_todos").select(
                 "id", count="exact"
-            ).eq("user_id", user_id).eq("is_active", True).execute()
-            total_habits = habits_resp.count if habits_resp.count else 0
+            ).eq("user_id", user_id).eq("is_recurring", True).neq("status", "cancelled").execute()
+            total_habits = tasks_resp.count if tasks_resp.count else 0
 
             if total_habits == 0:
                 return "Today's Habits: No habits set up yet"
 
             # Count today's completions
-            completions_resp = self.supabase.table("habit_completions").select(
+            completions_resp = self.supabase.table("task_completions").select(
                 "id", count="exact"
             ).eq("user_id", user_id).eq("date", today_str).execute()
             completed = completions_resp.count if completions_resp.count else 0

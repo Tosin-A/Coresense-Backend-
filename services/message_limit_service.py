@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 # Limit configuration
 FREE_DAILY_LIMIT = 10
 FREE_WEEKLY_LIMIT = 25
-PRO_DAILY_LIMIT = 10
-PRO_WEEKLY_LIMIT = 30
+PRO_DAILY_LIMIT = 25
+PRO_WEEKLY_LIMIT = 60
 
 
 def _needs_daily_reset(last_reset: Optional[str]) -> bool:

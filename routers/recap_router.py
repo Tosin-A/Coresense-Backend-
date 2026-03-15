@@ -145,10 +145,10 @@ def _fetch_health_trends(supabase, user_id: str, start: str, end: str) -> dict:
 
 
 def _fetch_habit_completions(supabase, user_id: str, start: str, end: str) -> dict:
-    """Fetch habit completions grouped by day."""
+    """Fetch task completions (recurring tasks) grouped by day."""
     try:
         response = (
-            supabase.table("habit_completions")
+            supabase.table("task_completions")
             .select("date")
             .eq("user_id", user_id)
             .gte("date", start)

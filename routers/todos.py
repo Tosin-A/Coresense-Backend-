@@ -4,7 +4,7 @@ Handles coach-shared to-do items between user and AI coach.
 """
 
 from fastapi import APIRouter, Depends
-from datetime import datetime, timezone
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 import re
@@ -36,6 +36,9 @@ class CreateTodoRequest(BaseModel):
     due_time: Optional[str] = None  # Time string (HH:MM)
     reminder_enabled: Optional[bool] = False
     reminder_minutes_before: Optional[int] = Field(30, ge=0, le=10080)
+    is_recurring: Optional[bool] = False
+    frequency: Optional[str] = "daily"
+    icon: Optional[str] = None
 
     @field_validator('priority')
     @classmethod
@@ -178,6 +181,9 @@ async def create_todo(request: CreateTodoRequest, user_id: str = Depends(get_cur
             'due_time': request.due_time,
             'reminder_enabled': request.reminder_enabled or False,
             'reminder_minutes_before': request.reminder_minutes_before or 30,
+            'is_recurring': request.is_recurring or False,
+            'frequency': request.frequency or 'daily',
+            'icon': request.icon,
             'created_at': now,
             'updated_at': now
         }
@@ -416,3 +422,173 @@ async def delete_todo(todo_id: str, user_id: str = Depends(get_current_user_id))
     except Exception as e:
         logger.error(f"Error deleting todo: {e}")
         raise DatabaseError("Failed to delete todo", original_error=e)
+
+
+# ============================================
+# RECURRING TASK ENDPOINTS
+# ============================================
+
+def _recalculate_streak(supabase, task_id: str) -> tuple[int, int]:
+    """
+    Walk back from today counting consecutive completed days.
+    Returns (current_streak, longest_streak).
+    """
+    response = (
+        supabase.table("task_completions")
+        .select("date")
+        .eq("task_id", task_id)
+        .order("date", desc=True)
+        .limit(365)
+        .execute()
+    )
+
+    if not response.data:
+        return 0, 0
+
+    completed_dates = {row["date"] for row in response.data}
+    today = date.today()
+
+    # Count current streak
+    streak = 0
+    check_date = today
+    while check_date.isoformat() in completed_dates:
+        streak += 1
+        check_date -= timedelta(days=1)
+
+    # If today isn't completed but yesterday is, check from yesterday
+    if streak == 0:
+        check_date = today - timedelta(days=1)
+        while check_date.isoformat() in completed_dates:
+            streak += 1
+            check_date -= timedelta(days=1)
+
+    # Get existing longest streak from the task record
+    task_resp = (
+        supabase.table("shared_todos")
+        .select("longest_streak")
+        .eq("id", task_id)
+        .limit(1)
+        .execute()
+    )
+    existing_longest = 0
+    if task_resp.data:
+        existing_longest = task_resp.data[0].get("longest_streak", 0) or 0
+
+    longest = max(streak, existing_longest)
+    return streak, longest
+
+
+@router.get("/todos/today")
+async def get_recurring_todos_today(user_id: str = Depends(get_current_user_id)):
+    """Get all recurring tasks with today's completion status."""
+    try:
+        supabase = get_supabase_client()
+        today_str = date.today().isoformat()
+
+        # Get active recurring tasks
+        todos_resp = (
+            supabase.table("shared_todos")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("is_recurring", True)
+            .neq("status", "cancelled")
+            .order("created_at")
+            .execute()
+        )
+        todos = todos_resp.data or []
+
+        if not todos:
+            return []
+
+        todo_ids = [t["id"] for t in todos]
+
+        # Get today's completions
+        completions_resp = (
+            supabase.table("task_completions")
+            .select("task_id")
+            .eq("user_id", user_id)
+            .eq("date", today_str)
+            .in_("task_id", todo_ids)
+            .execute()
+        )
+        completed_ids = {c["task_id"] for c in (completions_resp.data or [])}
+
+        for todo in todos:
+            todo["completed_today"] = todo["id"] in completed_ids
+
+        return todos
+
+    except Exception as e:
+        logger.error(f"Error fetching recurring todos today: {e}")
+        raise DatabaseError("Failed to fetch recurring todos", original_error=e)
+
+
+@router.post("/todos/{todo_id}/toggle")
+async def toggle_recurring_todo(
+    todo_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Toggle today's completion for a recurring task. Recalculates streak."""
+    try:
+        supabase = get_supabase_client()
+        today_str = date.today().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Check if already completed today
+        existing = (
+            supabase.table("task_completions")
+            .select("id")
+            .eq("task_id", todo_id)
+            .eq("date", today_str)
+            .limit(1)
+            .execute()
+        )
+
+        if existing.data and len(existing.data) > 0:
+            # Un-complete: delete the completion
+            supabase.table("task_completions").delete().eq(
+                "id", existing.data[0]["id"]
+            ).execute()
+            completed_today = False
+        else:
+            # Complete: insert completion
+            supabase.table("task_completions").insert(
+                {
+                    "task_id": todo_id,
+                    "user_id": user_id,
+                    "date": today_str,
+                    "completed_at": now,
+                }
+            ).execute()
+            completed_today = True
+
+        # Recalculate streak
+        streak, longest = _recalculate_streak(supabase, todo_id)
+
+        # Update task record
+        update_data = {
+            "streak_count": streak,
+            "longest_streak": longest,
+            "updated_at": now,
+        }
+
+        todo_resp = (
+            supabase.table("shared_todos")
+            .update(update_data)
+            .eq("id", todo_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+
+        if todo_resp.data and len(todo_resp.data) > 0:
+            todo = todo_resp.data[0]
+            todo["completed_today"] = completed_today
+            return todo
+
+        raise NotFoundError("Task not found")
+
+    except NotFoundError:
+        raise
+    except Exception as e:
+        logger.error(f"Error toggling recurring todo: {e}")
+        raise DatabaseError("Failed to toggle recurring todo", original_error=e)

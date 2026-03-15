@@ -1603,8 +1603,8 @@ async def initialize_user(request: UserInitRequest, authenticated_user_id: str =
 # ONBOARDING COMPLETION ENDPOINT
 # ============================================
 
-# Static mapping from goals to starter habits
-GOAL_TO_HABITS = {
+# Static mapping from goals to recurring tasks
+GOAL_TO_RECURRING_TASKS = {
     "Study": [
         {"title": "Study for 30 minutes", "icon": "book-outline"},
         {"title": "Review notes before bed", "icon": "document-text-outline"},
@@ -1644,7 +1644,7 @@ async def complete_onboarding(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Post-onboarding: send welcome coach message and create starter habits.
+    Post-onboarding: send welcome coach message and create starter recurring tasks.
     """
     try:
         supabase = get_supabase_client()
@@ -1689,45 +1689,48 @@ async def complete_onboarding(
             logger.warning(f"Failed to create welcome message: {msg_err}")
             coach_message = {"text": welcome_text, "timestamp": now}
 
-        # 2. Create 3 starter habits from goal mapping
+        # 2. Create 3 starter recurring tasks from goal mapping
         starter_habits = []
-        selected_habits = []
+        selected_tasks = []
         for goal in request.goals:
-            habits_for_goal = GOAL_TO_HABITS.get(goal, [])
-            for h in habits_for_goal:
-                if h["title"] not in [s["title"] for s in selected_habits]:
-                    selected_habits.append(h)
-                    if len(selected_habits) >= 3:
+            tasks_for_goal = GOAL_TO_RECURRING_TASKS.get(goal, [])
+            for t in tasks_for_goal:
+                if t["title"] not in [s["title"] for s in selected_tasks]:
+                    selected_tasks.append(t)
+                    if len(selected_tasks) >= 3:
                         break
-            if len(selected_habits) >= 3:
+            if len(selected_tasks) >= 3:
                 break
 
         # Fallback if no goals matched
-        if not selected_habits:
-            selected_habits = [
+        if not selected_tasks:
+            selected_tasks = [
                 {"title": "Check in with yourself", "icon": "heart-outline"},
                 {"title": "Move for 15 minutes", "icon": "walk-outline"},
                 {"title": "Plan your top 3 priorities", "icon": "list-outline"},
             ]
 
-        for h in selected_habits[:3]:
+        for t in selected_tasks[:3]:
             try:
-                habit_data = {
+                task_data = {
                     "user_id": user_id,
-                    "title": h["title"],
-                    "icon": h.get("icon", "checkmark-circle-outline"),
+                    "title": t["title"],
+                    "icon": t.get("icon", "checkmark-circle-outline"),
+                    "created_by": "coach",
+                    "status": "pending",
+                    "priority": "medium",
+                    "is_recurring": True,
                     "frequency": "daily",
                     "streak_count": 0,
                     "longest_streak": 0,
-                    "is_active": True,
                     "created_at": now,
                     "updated_at": now,
                 }
-                resp = supabase.table("habits").insert(habit_data).execute()
+                resp = supabase.table("shared_todos").insert(task_data).execute()
                 if resp.data:
                     starter_habits.append(resp.data[0])
-            except Exception as habit_err:
-                logger.warning(f"Failed to create starter habit: {habit_err}")
+            except Exception as task_err:
+                logger.warning(f"Failed to create starter recurring task: {task_err}")
 
         return {
             "coach_message": coach_message,

@@ -18,7 +18,7 @@ from backend.routers.notifications import router as notifications_router
 from backend.routers.patterns import router as patterns_router
 from backend.routers.subscription_router import router as subscription_router
 from backend.routers.todos import router as todos_router
-from backend.routers.habits_router import router as habits_router
+
 from backend.routers.recap_router import router as recap_router
 from backend.middleware.rate_limit_middleware import RateLimitMiddleware
 from backend.config import get_settings
@@ -75,7 +75,7 @@ app.include_router(notifications_router)
 app.include_router(patterns_router)
 app.include_router(subscription_router)
 app.include_router(todos_router)
-app.include_router(habits_router)
+
 app.include_router(recap_router)
 
 
