@@ -2,7 +2,7 @@
 Message Limit Service
 Daily/weekly message limits.
 
-Free: 5 messages/day, 15 messages/week
+Free: 10 messages/day, 25 messages/week
 Pro: 10 messages/day, 30 messages/week (IAP only)
 """
 
@@ -15,8 +15,8 @@ from backend.database.supabase_client import get_supabase_client
 logger = logging.getLogger(__name__)
 
 # Limit configuration
-FREE_DAILY_LIMIT = 5
-FREE_WEEKLY_LIMIT = 15
+FREE_DAILY_LIMIT = 10
+FREE_WEEKLY_LIMIT = 25
 PRO_DAILY_LIMIT = 10
 PRO_WEEKLY_LIMIT = 30
 

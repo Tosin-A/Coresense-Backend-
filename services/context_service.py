@@ -129,12 +129,15 @@ class ContextService:
         else:
             todos_text = "  None"
 
+        # Fetch habit stats
+        habit_stats = self._get_today_habit_stats_sync(context.user_id)
+
         return f"""USER CONTEXT UPDATE:
 
 Name: {context.user_name}
 Current Streak: {context.current_streak} days
 Longest Streak: {context.longest_streak} days
-
+{habit_stats}
 Pending Tasks (nudge them about these):
 {todos_text}
 
@@ -270,6 +273,32 @@ Context Type: {context.context_type}"""
         except Exception as e:
             logger.error(f"Error updating context injection time: {e}")
     
+    def _get_today_habit_stats_sync(self, user_id: str) -> str:
+        """Get today's habit completion stats for context injection."""
+        try:
+            from datetime import date as date_type
+            today_str = date_type.today().isoformat()
+
+            # Count active habits
+            habits_resp = self.supabase.table("habits").select(
+                "id", count="exact"
+            ).eq("user_id", user_id).eq("is_active", True).execute()
+            total_habits = habits_resp.count if habits_resp.count else 0
+
+            if total_habits == 0:
+                return "Today's Habits: No habits set up yet"
+
+            # Count today's completions
+            completions_resp = self.supabase.table("habit_completions").select(
+                "id", count="exact"
+            ).eq("user_id", user_id).eq("date", today_str).execute()
+            completed = completions_resp.count if completions_resp.count else 0
+
+            return f"Today's Habits: {completed}/{total_habits} completed"
+        except Exception as e:
+            logger.error(f"Error getting habit stats: {e}")
+            return ""
+
     def _get_fallback_context(self, user_id: str) -> EssentialContext:
         """Get minimal fallback context"""
         return EssentialContext(

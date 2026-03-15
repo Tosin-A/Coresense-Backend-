@@ -1600,6 +1600,146 @@ async def initialize_user(request: UserInitRequest, authenticated_user_id: str =
 
 
 # ============================================
+# ONBOARDING COMPLETION ENDPOINT
+# ============================================
+
+# Static mapping from goals to starter habits
+GOAL_TO_HABITS = {
+    "Study": [
+        {"title": "Study for 30 minutes", "icon": "book-outline"},
+        {"title": "Review notes before bed", "icon": "document-text-outline"},
+        {"title": "Take a study break every hour", "icon": "timer-outline"},
+    ],
+    "Health": [
+        {"title": "Drink 8 glasses of water", "icon": "water-outline"},
+        {"title": "Take a 20-minute walk", "icon": "walk-outline"},
+        {"title": "Eat a healthy breakfast", "icon": "nutrition-outline"},
+    ],
+    "Habits": [
+        {"title": "Morning routine check-in", "icon": "sunny-outline"},
+        {"title": "Plan tomorrow before bed", "icon": "list-outline"},
+        {"title": "Read for 15 minutes", "icon": "book-outline"},
+    ],
+    "Sleep": [
+        {"title": "No screens 30 min before bed", "icon": "phone-portrait-outline"},
+        {"title": "Set a consistent bedtime", "icon": "moon-outline"},
+        {"title": "Wind down with stretching", "icon": "body-outline"},
+    ],
+    "Focus": [
+        {"title": "1 hour deep work block", "icon": "hourglass-outline"},
+        {"title": "Clear desk before starting", "icon": "desktop-outline"},
+        {"title": "Silence notifications while working", "icon": "notifications-off-outline"},
+    ],
+}
+
+
+class OnboardingCompleteRequest(BaseModel):
+    goals: List[str] = Field(default_factory=list)
+    messaging_style: Optional[str] = "balanced"
+
+
+@router.post("/onboarding/complete")
+async def complete_onboarding(
+    request: OnboardingCompleteRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Post-onboarding: send welcome coach message and create starter habits.
+    """
+    try:
+        supabase = get_supabase_client()
+        now = datetime.now(timezone.utc).isoformat()
+
+        # 1. Create a welcome coach message
+        style = request.messaging_style or "balanced"
+        if style == "firm":
+            welcome_text = (
+                "Welcome to CoreSense. No fluff, just results. "
+                "I've set up some starter habits based on your goals. "
+                "Let's get to work."
+            )
+        elif style == "supportive":
+            welcome_text = (
+                "Welcome to CoreSense! I'm so glad you're here. "
+                "I've created a few starter habits to help you get going. "
+                "Remember, every small step counts!"
+            )
+        else:
+            welcome_text = (
+                "Welcome to CoreSense. I've set up some starter habits "
+                "based on your goals. Check them out and let's build momentum together."
+            )
+
+        coach_message = None
+        try:
+            msg_data = {
+                "user_id": user_id,
+                "content": welcome_text,
+                "sender_type": "gpt",
+                "created_at": now,
+            }
+            msg_resp = supabase.table("messages").insert(msg_data).execute()
+            if msg_resp.data:
+                coach_message = {
+                    "id": msg_resp.data[0]["id"],
+                    "text": welcome_text,
+                    "timestamp": now,
+                }
+        except Exception as msg_err:
+            logger.warning(f"Failed to create welcome message: {msg_err}")
+            coach_message = {"text": welcome_text, "timestamp": now}
+
+        # 2. Create 3 starter habits from goal mapping
+        starter_habits = []
+        selected_habits = []
+        for goal in request.goals:
+            habits_for_goal = GOAL_TO_HABITS.get(goal, [])
+            for h in habits_for_goal:
+                if h["title"] not in [s["title"] for s in selected_habits]:
+                    selected_habits.append(h)
+                    if len(selected_habits) >= 3:
+                        break
+            if len(selected_habits) >= 3:
+                break
+
+        # Fallback if no goals matched
+        if not selected_habits:
+            selected_habits = [
+                {"title": "Check in with yourself", "icon": "heart-outline"},
+                {"title": "Move for 15 minutes", "icon": "walk-outline"},
+                {"title": "Plan your top 3 priorities", "icon": "list-outline"},
+            ]
+
+        for h in selected_habits[:3]:
+            try:
+                habit_data = {
+                    "user_id": user_id,
+                    "title": h["title"],
+                    "icon": h.get("icon", "checkmark-circle-outline"),
+                    "frequency": "daily",
+                    "streak_count": 0,
+                    "longest_streak": 0,
+                    "is_active": True,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                resp = supabase.table("habits").insert(habit_data).execute()
+                if resp.data:
+                    starter_habits.append(resp.data[0])
+            except Exception as habit_err:
+                logger.warning(f"Failed to create starter habit: {habit_err}")
+
+        return {
+            "coach_message": coach_message,
+            "starter_habits": starter_habits,
+        }
+
+    except Exception as e:
+        logger.error(f"Error completing onboarding: {e}")
+        raise DatabaseError("Failed to complete onboarding", original_error=e)
+
+
+# ============================================
 # ACCOUNT DELETION ENDPOINT
 # ============================================
 
