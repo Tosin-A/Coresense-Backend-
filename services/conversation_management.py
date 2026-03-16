@@ -385,6 +385,7 @@ class ConversationManagementService:
                 "user_id": user_id,
                 "conversation_id": conversation_id,
                 "openai_thread_id": conversation_id,  # backwards compat column
+                "assistant_id": "responses_api",  # placeholder for NOT NULL constraint
                 "status": "active",
                 "created_at": datetime.now().isoformat(),
             }).execute()
