@@ -600,6 +600,21 @@ class NotificationService:
             data={"screen": "Insights", "insight_id": insight_id}
         ))
 
+    async def send_coach_nudge(
+        self,
+        user_id: str,
+        title: str,
+        body: str
+    ) -> bool:
+        """Send a contextual coach nudge notification"""
+        return await self.send_notification(NotificationPayload(
+            user_id=user_id,
+            type=NotificationType.COACH_NUDGE,
+            title=title,
+            body=body,
+            data={"screen": "Coach", "nudge_type": "contextual"}
+        ))
+
     async def schedule_task_reminders_for_user(self, user_id: str) -> int:
         """Schedule reminders for all user's tasks with due dates and reminders enabled"""
         try:

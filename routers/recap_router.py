@@ -1,6 +1,6 @@
 """
 Weekly Recap API Endpoint
-Aggregates mood, energy, sleep, steps, habits, and streak data for a given period.
+Aggregates mood, energy, sleep, steps, recurring tasks, and streak data for a given period.
 """
 
 from fastapi import APIRouter, Depends, Query
@@ -27,7 +27,7 @@ async def get_weekly_recap(
 ):
     """
     Get aggregated recap data for the last N days.
-    Returns trends for mood, energy, sleep, steps, habits, and streak info.
+    Returns trends for mood, energy, sleep, steps, recurring tasks, and streak info.
     """
     try:
         supabase = get_supabase_client()
@@ -43,23 +43,23 @@ async def get_weekly_recap(
         health_task = asyncio.to_thread(
             _fetch_health_trends, supabase, user_id, start_str, end_str
         )
-        habits_task = asyncio.to_thread(
-            _fetch_habit_completions, supabase, user_id, start_str, end_str
+        tasks_task = asyncio.to_thread(
+            _fetch_task_completions, supabase, user_id, start_str, end_str
         )
         streak_task = asyncio.to_thread(
             _fetch_streak_info, supabase, user_id
         )
 
-        mood_energy, health, habits, streak = await asyncio.gather(
-            mood_energy_task, health_task, habits_task, streak_task
+        mood_energy, health, tasks_data, streak = await asyncio.gather(
+            mood_energy_task, health_task, tasks_task, streak_task
         )
 
         mood_trend = mood_energy.get("mood", [])
         energy_trend = mood_energy.get("energy", [])
         sleep_trend = health.get("sleep", [])
         steps_trend = health.get("steps", [])
-        habits_by_day = habits.get("by_day", [])
-        habits_total = habits.get("total", 0)
+        tasks_by_day = tasks_data.get("by_day", [])
+        tasks_total = tasks_data.get("total", 0)
 
         # Build coach summary string
         parts = []
@@ -71,8 +71,8 @@ async def get_weekly_recap(
         if energy_vals:
             avg = _safe_avg(energy_vals)
             parts.append(f"Avg energy: {avg}/10")
-        if habits_total > 0:
-            parts.append(f"{habits_total} habits completed")
+        if tasks_total > 0:
+            parts.append(f"{tasks_total} tasks completed")
         if streak.get("current_streak", 0) > 0:
             parts.append(f"{streak['current_streak']}-day streak")
 
@@ -85,9 +85,9 @@ async def get_weekly_recap(
             "energy_trend": energy_trend,
             "sleep_trend": sleep_trend,
             "steps_trend": steps_trend,
-            "habits_completed_by_day": habits_by_day,
-            "habits_completed_total": habits_total,
-            "habits_streak": streak.get("current_streak", 0),
+            "tasks_completed_by_day": tasks_by_day,
+            "tasks_completed_total": tasks_total,
+            "tasks_streak": streak.get("current_streak", 0),
             "coach_summary": coach_summary,
         }
 
@@ -144,7 +144,7 @@ def _fetch_health_trends(supabase, user_id: str, start: str, end: str) -> dict:
         return {"sleep": [], "steps": []}
 
 
-def _fetch_habit_completions(supabase, user_id: str, start: str, end: str) -> dict:
+def _fetch_task_completions(supabase, user_id: str, start: str, end: str) -> dict:
     """Fetch task completions (recurring tasks) grouped by day."""
     try:
         response = (
@@ -168,7 +168,7 @@ def _fetch_habit_completions(supabase, user_id: str, start: str, end: str) -> di
 
         return {"by_day": by_day, "total": total}
     except Exception as e:
-        logger.error(f"Error fetching habit completions: {e}")
+        logger.error(f"Error fetching task completions: {e}")
         return {"by_day": [], "total": 0}
 
 

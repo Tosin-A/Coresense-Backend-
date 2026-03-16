@@ -343,6 +343,58 @@ async def get_home_data(user_id: str = Depends(get_current_user_id)):
 # INSIGHTS ENDPOINTS
 # ============================================
 
+
+async def persist_generated_insights(
+    user_id: str, insights: List[dict]
+) -> List[str]:
+    """
+    Persist generated insights to the insights table via upsert.
+    Returns list of IDs for newly inserted rows.
+    Uses (user_id, category, date) as the dedup key.
+    """
+    sb = get_supabase_client()
+    today = date.today().isoformat()
+    new_ids: List[str] = []
+
+    for insight in insights[:5]:
+        category = insight.get("category", "general")
+        title = insight.get("title", "")
+        body = insight.get("body", "")
+
+        # Check if already persisted today for this category
+        existing = sb.table("insights").select("id").eq(
+            "user_id", user_id
+        ).eq("category", category).gte(
+            "created_at", f"{today}T00:00:00"
+        ).limit(1).execute()
+
+        if existing.data:
+            continue
+
+        row = {
+            "user_id": user_id,
+            "title": title,
+            "body": body,
+            "category": category,
+            "trend": insight.get("trend", "stable"),
+            "actionable": insight.get("actionable", False),
+            "action_text": insight.get("action_text"),
+            "priority": insight.get("priority", 0),
+            "saved": False,
+            "dismissed": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            resp = sb.table("insights").insert(row).execute()
+            if resp.data:
+                new_ids.append(resp.data[0]["id"])
+        except Exception as e:
+            logger.warning(f"Error persisting insight for {user_id}/{category}: {e}")
+
+    return new_ids
+
+
 @router.get("/insights")
 async def get_insights(
     user_id: str = Depends(get_current_user_id),
@@ -375,7 +427,10 @@ async def get_insights(
         generated_insights = await insight_generation_service.generate_insights(
             user_id, "weekly", wellness_score=wellness_score
         )
-        
+
+        # Persist insights so home screen and scheduled jobs can find them
+        await persist_generated_insights(user_id, generated_insights)
+
         # Convert generated insights to pattern format
         patterns = []
         for insight in generated_insights[:5]:  # Top 5

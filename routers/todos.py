@@ -39,6 +39,7 @@ class CreateTodoRequest(BaseModel):
     is_recurring: Optional[bool] = False
     frequency: Optional[str] = "daily"
     icon: Optional[str] = None
+    weekly_target: Optional[int] = Field(None, ge=1, le=7)
 
     @field_validator('priority')
     @classmethod
@@ -184,6 +185,7 @@ async def create_todo(request: CreateTodoRequest, user_id: str = Depends(get_cur
             'is_recurring': request.is_recurring or False,
             'frequency': request.frequency or 'daily',
             'icon': request.icon,
+            'weekly_target': request.weekly_target or 7,
             'created_at': now,
             'updated_at': now
         }
@@ -480,18 +482,20 @@ def _recalculate_streak(supabase, task_id: str) -> tuple[int, int]:
 
 @router.get("/todos/today")
 async def get_recurring_todos_today(user_id: str = Depends(get_current_user_id)):
-    """Get all recurring tasks with today's completion status."""
+    """Get all recurring tasks with today's completion status and weekly progress."""
     try:
         supabase = get_supabase_client()
-        today_str = date.today().isoformat()
+        today = date.today()
+        today_str = today.isoformat()
 
-        # Get active recurring tasks
+        # Get active recurring tasks, ordered by sort_order then created_at
         todos_resp = (
             supabase.table("shared_todos")
             .select("*")
             .eq("user_id", user_id)
             .eq("is_recurring", True)
             .neq("status", "cancelled")
+            .order("sort_order")
             .order("created_at")
             .execute()
         )
@@ -513,8 +517,27 @@ async def get_recurring_todos_today(user_id: str = Depends(get_current_user_id))
         )
         completed_ids = {c["task_id"] for c in (completions_resp.data or [])}
 
+        # For weekly tasks, get this week's completion count
+        week_start = (today - timedelta(days=today.weekday())).isoformat()
+        weekly_completions_resp = (
+            supabase.table("task_completions")
+            .select("task_id")
+            .eq("user_id", user_id)
+            .gte("date", week_start)
+            .lte("date", today_str)
+            .in_("task_id", todo_ids)
+            .execute()
+        )
+        weekly_counts: dict[str, int] = {}
+        for c in (weekly_completions_resp.data or []):
+            tid = c["task_id"]
+            weekly_counts[tid] = weekly_counts.get(tid, 0) + 1
+
         for todo in todos:
             todo["completed_today"] = todo["id"] in completed_ids
+            if todo.get("frequency") == "weekly":
+                todo["weekly_completed"] = weekly_counts.get(todo["id"], 0)
+                todo["weekly_target"] = todo.get("weekly_target") or 7
 
         return todos
 
@@ -583,6 +606,11 @@ async def toggle_recurring_todo(
         if todo_resp.data and len(todo_resp.data) > 0:
             todo = todo_resp.data[0]
             todo["completed_today"] = completed_today
+
+            # Detect streak milestones for celebration
+            milestones = [3, 7, 14, 21, 30, 50, 100, 365]
+            todo["streak_milestone"] = streak if (completed_today and streak in milestones) else None
+
             return todo
 
         raise NotFoundError("Task not found")
@@ -592,3 +620,73 @@ async def toggle_recurring_todo(
     except Exception as e:
         logger.error(f"Error toggling recurring todo: {e}")
         raise DatabaseError("Failed to toggle recurring todo", original_error=e)
+
+
+@router.get("/todos/completions")
+async def get_completion_history(
+    user_id: str = Depends(get_current_user_id),
+    days: int = 30,
+):
+    """Get completion history for the heatmap/contribution grid."""
+    try:
+        supabase = get_supabase_client()
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days)
+
+        response = (
+            supabase.table("task_completions")
+            .select("date, task_id")
+            .eq("user_id", user_id)
+            .gte("date", start_date.isoformat())
+            .lte("date", end_date.isoformat())
+            .execute()
+        )
+        rows = response.data or []
+
+        # Group by date
+        day_counts: dict[str, int] = {}
+        for r in rows:
+            d = r["date"]
+            day_counts[d] = day_counts.get(d, 0) + 1
+
+        # Build complete date range with zeros for missing days
+        result = []
+        current = start_date
+        while current <= end_date:
+            d_str = current.isoformat()
+            result.append({"date": d_str, "count": day_counts.get(d_str, 0)})
+            current += timedelta(days=1)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error fetching completion history: {e}")
+        raise DatabaseError("Failed to fetch completion history", original_error=e)
+
+
+class ReorderRequest(BaseModel):
+    """Request to reorder recurring tasks."""
+    task_ids: list[str]  # Ordered list of task IDs
+
+
+@router.put("/todos/reorder")
+async def reorder_recurring_todos(
+    request: ReorderRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Reorder recurring tasks by updating sort_order."""
+    try:
+        supabase = get_supabase_client()
+        now = datetime.now(timezone.utc).isoformat()
+
+        for index, task_id in enumerate(request.task_ids):
+            supabase.table("shared_todos").update({
+                "sort_order": index,
+                "updated_at": now,
+            }).eq("id", task_id).eq("user_id", user_id).execute()
+
+        return {"success": True}
+
+    except Exception as e:
+        logger.error(f"Error reordering todos: {e}")
+        raise DatabaseError("Failed to reorder todos", original_error=e)

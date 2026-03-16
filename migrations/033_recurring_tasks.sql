@@ -7,6 +7,8 @@ ALTER TABLE shared_todos ADD COLUMN IF NOT EXISTS frequency TEXT DEFAULT 'daily'
 ALTER TABLE shared_todos ADD COLUMN IF NOT EXISTS streak_count INTEGER DEFAULT 0;
 ALTER TABLE shared_todos ADD COLUMN IF NOT EXISTS longest_streak INTEGER DEFAULT 0;
 ALTER TABLE shared_todos ADD COLUMN IF NOT EXISTS icon TEXT;
+ALTER TABLE shared_todos ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0;
+ALTER TABLE shared_todos ADD COLUMN IF NOT EXISTS weekly_target INTEGER DEFAULT 7;
 
 -- Create task_completions table (tracks daily completions for recurring tasks)
 CREATE TABLE IF NOT EXISTS task_completions (
