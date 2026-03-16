@@ -105,17 +105,17 @@ def _fetch_mood_energy(supabase, user_id: str, start: str, end: str) -> dict:
     try:
         response = (
             supabase.table("user_metrics")
-            .select("metric_type, value, recorded_date")
+            .select("metric_type, value, logged_at")
             .eq("user_id", user_id)
             .in_("metric_type", ["mood", "energy"])
-            .gte("recorded_date", start)
-            .lte("recorded_date", end)
-            .order("recorded_date")
+            .gte("logged_at", start)
+            .lte("logged_at", end)
+            .order("logged_at")
             .execute()
         )
         rows = response.data or []
-        mood = [{"date": r["recorded_date"], "value": r["value"]} for r in rows if r["metric_type"] == "mood"]
-        energy = [{"date": r["recorded_date"], "value": r["value"]} for r in rows if r["metric_type"] == "energy"]
+        mood = [{"date": r["logged_at"][:10], "value": r["value"]} for r in rows if r["metric_type"] == "mood"]
+        energy = [{"date": r["logged_at"][:10], "value": r["value"]} for r in rows if r["metric_type"] == "energy"]
         return {"mood": mood, "energy": energy}
     except Exception as e:
         logger.error(f"Error fetching mood/energy: {e}")
