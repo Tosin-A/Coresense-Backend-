@@ -1103,7 +1103,7 @@ async def update_profile(request: ProfileUpdateRequest, user_id: str = Depends(g
 async def get_preferences(user_id: str = Depends(get_current_user_id)):
     """Get user preferences."""
     try:
-        response = get_supabase_client().table('user_preferences').select('messaging_style,messaging_frequency,goal_focus_areas,check_in_time,active_hours_start,active_hours_end,healthkit_enabled,notifications_enabled,daily_report_enabled,weekly_report_enabled,coach_personality').eq(
+        response = get_supabase_client().table('user_preferences').select('messaging_style,messaging_frequency,quiet_hours_enabled,quiet_hours_start,quiet_hours_end,accountability_level,goals,healthkit_enabled,push_notifications,task_reminders,weekly_reports,coach_personality').eq(
             'user_id', user_id
         ).limit(1).execute()
         
