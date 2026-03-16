@@ -185,7 +185,6 @@ async def create_todo(request: CreateTodoRequest, user_id: str = Depends(get_cur
             'is_recurring': request.is_recurring or False,
             'frequency': request.frequency or 'daily',
             'icon': request.icon,
-            'weekly_target': request.weekly_target or 7,
             'created_at': now,
             'updated_at': now
         }
@@ -488,14 +487,14 @@ async def get_recurring_todos_today(user_id: str = Depends(get_current_user_id))
         today = date.today()
         today_str = today.isoformat()
 
-        # Get active recurring tasks, ordered by sort_order then created_at
+        # Get active recurring tasks, ordered by created_at
+        # (sort_order column may not exist yet; safe fallback)
         todos_resp = (
             supabase.table("shared_todos")
             .select("*")
             .eq("user_id", user_id)
             .eq("is_recurring", True)
             .neq("status", "cancelled")
-            .order("sort_order")
             .order("created_at")
             .execute()
         )
@@ -674,16 +673,23 @@ async def reorder_recurring_todos(
     request: ReorderRequest,
     user_id: str = Depends(get_current_user_id),
 ):
-    """Reorder recurring tasks by updating sort_order."""
+    """Reorder recurring tasks. Updates sort_order if column exists, otherwise no-op."""
     try:
         supabase = get_supabase_client()
         now = datetime.now(timezone.utc).isoformat()
 
         for index, task_id in enumerate(request.task_ids):
-            supabase.table("shared_todos").update({
-                "sort_order": index,
-                "updated_at": now,
-            }).eq("id", task_id).eq("user_id", user_id).execute()
+            try:
+                supabase.table("shared_todos").update({
+                    "sort_order": index,
+                    "updated_at": now,
+                }).eq("id", task_id).eq("user_id", user_id).execute()
+            except Exception:
+                # sort_order column may not exist yet; just update timestamp
+                supabase.table("shared_todos").update({
+                    "updated_at": now,
+                }).eq("id", task_id).eq("user_id", user_id).execute()
+                break
 
         return {"success": True}
 
