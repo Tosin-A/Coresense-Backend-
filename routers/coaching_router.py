@@ -53,12 +53,13 @@ class CoachingChatResponse(BaseModel):
     context_used: List[str]
     variation_applied: bool
     response_type: CoachingResponseType
+    conversation_id: Optional[str] = None
+    response_id: Optional[str] = None
+    # Deprecated aliases for backwards compat
     thread_id: Optional[str] = None
-    run_id: Optional[str] = None  # Current run ID for delta tracking
+    run_id: Optional[str] = None
     function_calls: List[Dict[str, Any]] = Field(default_factory=list)
     usage_stats: Optional[Dict[str, Any]] = None
-    # Reconciliation data - optional to handle partial failures
-    # saved_ids contains: {"user_message": "db-uuid", "assistant_temp_ids": ["temp_id_1", "temp_id_2"]}
     saved_ids: Optional[Dict[str, Union[str, List[str]]]] = None
     client_temp_id: Optional[str] = None
 
@@ -156,24 +157,12 @@ async def chat_with_coach_custom_gpt(
 
         logger.info(f"Custom GPT chat complete, messages: {len(response.messages)}")
         
-        return CoachingChatResponse(
-            messages=response.messages,
-            personality_score=response.personality_score,
-            context_used=response.context_used,
-            variation_applied=response.variation_applied,
-            response_type=response.response_type,
-            thread_id=response.thread_id,
-            run_id=response.run_id,  # Include run_id for delta tracking
-            function_calls=response.function_calls,
-            usage_stats=response.usage_stats,
-            saved_ids=response.saved_ids,
-            client_temp_id=response.client_temp_id
-        )
-        
+        return _build_chat_response(response)
+
     except (CoreSenseException, DatabaseError, ValidationError, NotFoundError, AuthorizationError):
         raise
     except Exception as e:
-        logger.error(f"❌ ERROR in custom gpt chat: {e}", exc_info=True)
+        logger.error(f"ERROR in custom gpt chat: {e}", exc_info=True)
         raise DatabaseError("Failed to generate coach response", original_error=e)
 
 
@@ -260,25 +249,70 @@ async def chat_with_coach(
 
         logger.info(f"Chat complete, messages: {len(response.messages)}, type: {response.response_type}")
         
-        return CoachingChatResponse(
-            messages=response.messages,
-            personality_score=response.personality_score,
-            context_used=response.context_used,
-            variation_applied=response.variation_applied,
-            response_type=response.response_type,
-            thread_id=response.thread_id,
-            run_id=response.run_id,  # Include run_id for delta tracking
-            function_calls=response.function_calls,
-            usage_stats=response.usage_stats,
-            saved_ids=response.saved_ids,
-            client_temp_id=response.client_temp_id
-        )
-        
+        return _build_chat_response(response)
+
     except (CoreSenseException, DatabaseError, ValidationError, NotFoundError, AuthorizationError):
         raise
     except Exception as e:
-        logger.error(f"❌ ERROR in unified chat: {e}", exc_info=True)
+        logger.error(f"ERROR in unified chat: {e}", exc_info=True)
         raise DatabaseError("Failed to generate coach response", original_error=e)
+
+
+def _build_chat_response(response: CoachingResponse) -> CoachingChatResponse:
+    """Build a CoachingChatResponse from a CoachingResponse dataclass."""
+    return CoachingChatResponse(
+        messages=response.messages,
+        personality_score=response.personality_score,
+        context_used=response.context_used,
+        variation_applied=response.variation_applied,
+        response_type=response.response_type,
+        conversation_id=response.conversation_id,
+        response_id=response.response_id,
+        thread_id=response.thread_id,
+        run_id=response.run_id,
+        function_calls=response.function_calls,
+        usage_stats=response.usage_stats,
+        saved_ids=response.saved_ids,
+        client_temp_id=response.client_temp_id,
+    )
+
+
+# ============================================================================
+# PERSONALITY ENDPOINTS
+# ============================================================================
+
+class SetPersonalityRequest(BaseModel):
+    personality_id: str = Field(..., max_length=50)
+
+
+@router.get("/personalities")
+async def list_personalities_endpoint():
+    """List available coach personality presets."""
+    from backend.services.coach_personalities import list_personalities
+    return {"personalities": list_personalities()}
+
+
+@router.put("/personality")
+async def set_personality(
+    request: SetPersonalityRequest,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """Set the user's coach personality."""
+    from backend.services.coach_personalities import PERSONALITIES
+    from backend.database.supabase_client import get_supabase_client
+
+    if request.personality_id not in PERSONALITIES:
+        raise ValidationError(f"Unknown personality: {request.personality_id}")
+
+    try:
+        get_supabase_client().table("user_preferences").upsert({
+            "user_id": current_user_id,
+            "coach_personality": request.personality_id,
+        }).execute()
+        return {"success": True, "personality_id": request.personality_id}
+    except Exception as e:
+        logger.error(f"Error setting personality: {e}")
+        raise DatabaseError("Failed to update personality", original_error=e)
 
 
 @router.get("/context", response_model=Dict[str, Any])
@@ -504,17 +538,8 @@ async def get_coach_greeting(
             context=context_data
         )
         
-        return CoachingChatResponse(
-            messages=response.messages,
-            personality_score=response.personality_score,
-            context_used=response.context_used,
-            variation_applied=response.variation_applied,
-            response_type=response.response_type,
-            thread_id=response.thread_id,
-            function_calls=response.function_calls,
-            usage_stats=response.usage_stats
-        )
-        
+        return _build_chat_response(response)
+
     except Exception as e:
         logger.error(f"Error generating coach greeting: {e}")
         # Return fallback greeting
@@ -548,17 +573,8 @@ async def get_coach_pressure(
             context=context_data
         )
         
-        return CoachingChatResponse(
-            messages=response.messages,
-            personality_score=response.personality_score,
-            context_used=response.context_used,
-            variation_applied=response.variation_applied,
-            response_type=response.response_type,
-            thread_id=response.thread_id,
-            function_calls=response.function_calls,
-            usage_stats=response.usage_stats
-        )
-        
+        return _build_chat_response(response)
+
     except Exception as e:
         logger.error(f"Error generating coach pressure: {e}")
         # Return fallback pressure message

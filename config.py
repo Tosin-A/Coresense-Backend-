@@ -20,10 +20,9 @@ class Settings(BaseSettings):
     port: int = 8000
     environment: str = "production"
     
-    # Optional: Will be needed in later milestones
+    # OpenAI
     openai_api_key: Optional[str] = None
     gpt_model: Optional[str] = "gpt-4o-mini"
-    openai_assistant_id: Optional[str] = None
     
     # Stripe
     stripe_secret_key: Optional[str] = None

@@ -57,6 +57,7 @@ class PreferencesUpdateRequest(BaseModel):
     push_notifications: Optional[bool] = None
     task_reminders: Optional[bool] = None
     weekly_reports: Optional[bool] = None
+    coach_personality: Optional[str] = Field(None, max_length=50)
 
     @field_validator('quiet_hours_start', 'quiet_hours_end')
     @classmethod
@@ -1102,7 +1103,7 @@ async def update_profile(request: ProfileUpdateRequest, user_id: str = Depends(g
 async def get_preferences(user_id: str = Depends(get_current_user_id)):
     """Get user preferences."""
     try:
-        response = get_supabase_client().table('user_preferences').select('messaging_style,messaging_frequency,goal_focus_areas,check_in_time,active_hours_start,active_hours_end,healthkit_enabled,notifications_enabled,daily_report_enabled,weekly_report_enabled').eq(
+        response = get_supabase_client().table('user_preferences').select('messaging_style,messaging_frequency,goal_focus_areas,check_in_time,active_hours_start,active_hours_end,healthkit_enabled,notifications_enabled,daily_report_enabled,weekly_report_enabled,coach_personality').eq(
             'user_id', user_id
         ).limit(1).execute()
         
@@ -1119,7 +1120,8 @@ async def get_preferences(user_id: str = Depends(get_current_user_id)):
                 "healthkitEnabled": prefs.get('healthkit_enabled', False),
                 "pushNotifications": prefs.get('push_notifications', True),
                 "taskReminders": prefs.get('task_reminders', True),
-                "weeklyReports": prefs.get('weekly_reports', True)
+                "weeklyReports": prefs.get('weekly_reports', True),
+                "coachPersonality": prefs.get('coach_personality', 'cora'),
             }
 
         # Return defaults if no preferences exist
@@ -1134,7 +1136,8 @@ async def get_preferences(user_id: str = Depends(get_current_user_id)):
             "healthkitEnabled": False,
             "pushNotifications": True,
             "taskReminders": True,
-            "weeklyReports": True
+            "weeklyReports": True,
+            "coachPersonality": "cora",
         }
         
     except Exception as e:
@@ -1170,6 +1173,8 @@ async def update_preferences(request: PreferencesUpdateRequest, user_id: str = D
             updates['task_reminders'] = request.task_reminders
         if request.weekly_reports is not None:
             updates['weekly_reports'] = request.weekly_reports
+        if request.coach_personality is not None:
+            updates['coach_personality'] = request.coach_personality
 
         # Upsert preferences
         get_supabase_client().table('user_preferences').upsert({

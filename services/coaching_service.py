@@ -12,8 +12,10 @@ from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
 from enum import Enum
 
-from .thread_management import thread_management
+from .conversation_management import conversation_management
 from .context_service import context_service
+from .coach_personalities import get_personality_prompt
+from backend.database.supabase_client import get_supabase_client
 from .message_limit_service import (
     check_message_limit,
     increment_message_count,
@@ -78,8 +80,11 @@ class CoachingResponse:
     context_used: List[str]
     variation_applied: bool
     response_type: CoachingResponseType
+    conversation_id: Optional[str] = None
+    response_id: Optional[str] = None
+    # Deprecated aliases for backwards compat
     thread_id: Optional[str] = None
-    run_id: Optional[str] = None  # Current run ID for delta tracking
+    run_id: Optional[str] = None
     function_calls: List[Dict[str, Any]] = None
     usage_stats: Optional[Dict[str, Any]] = None
     # Reconciliation data - optional to handle partial failures
@@ -92,7 +97,7 @@ class UnifiedCoachingService:
     Unified Coaching Service - Single source of truth for all coaching logic
     
     Features:
-    - Assistant-Native architecture (leverages thread_management)
+    - Responses API architecture (leverages conversation_management)
     - Minimal context injection (leverages context_service)
     - Message limit integration
     - Unified error handling
@@ -100,134 +105,8 @@ class UnifiedCoachingService:
     """
     
     def __init__(self):
-        self.thread_manager = thread_management
+        self.conversation_mgr = conversation_management
         self.context_mgr = context_service
-        
-        # Function definitions for the assistant
-        self.functions = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_user_memory",
-                    "description": "Retrieve stored user coaching memories and preferences",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "user_id": {"type": "string"},
-                            "memory_types": {
-                                "type": "array", 
-                                "items": {"type": "string"},
-                                "default": ["preferences", "goals", "patterns"]
-                            }
-                        },
-                        "required": ["user_id"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "store_user_memory",
-                    "description": "Store important coaching insights and user preferences",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "user_id": {"type": "string"},
-                            "memory_type": {"type": "string"},
-                            "title": {"type": "string"},
-                            "content": {"type": "string"},
-                            "importance": {"type": "number", "default": 0.5}
-                        },
-                        "required": ["user_id", "memory_type", "title", "content"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "analyze_conversation_pattern",
-                    "description": "Analyze conversation for coaching insights",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "user_id": {"type": "string"},
-                            "recent_messages": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Recent conversation messages"
-                            },
-                            "analysis_type": {"type": "string"}
-                        },
-                        "required": ["user_id", "recent_messages"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "create_user_task",
-                    "description": (
-                        "Create a task on the user's to-do list. Call this ONLY when the user makes "
-                        "a clear, specific commitment to do something actionable. Examples: 'I'll go to "
-                        "the gym tomorrow at 6am', 'I'm going to read for 30 minutes tonight', 'I need "
-                        "to finish my report by Friday'. Do NOT call this for vague intentions like "
-                        "'I should exercise more' or 'I want to be healthier'. The commitment must have "
-                        "a specific action."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "user_id": {
-                                "type": "string",
-                                "description": "The user's ID"
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "Short, actionable task title under 60 characters"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "Optional additional context about the task"
-                            },
-                            "priority": {
-                                "type": "string",
-                                "enum": ["low", "medium", "high"],
-                                "description": "Task priority. Default to medium."
-                            },
-                            "coach_reasoning": {
-                                "type": "string",
-                                "description": "Write in first person from the user's perspective (e.g. \"I'm working on robotics at 4\", \"I'm going to the gym at 6am\"). Keep it to one short sentence."
-                            }
-                        },
-                        "required": ["user_id", "title"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "schedule_calendar_event",
-                    "description": (
-                        "Schedule an event in the user's calendar. Call this when the user commits "
-                        "to something time-specific, e.g. 'I'll go to the gym tomorrow', 'I need to "
-                        "attend a meeting on Friday at 3pm', 'I'm going to work on this project Thursday'. "
-                        "Do NOT call this for vague intentions. The app will find the best available time."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "user_id": {"type": "string"},
-                            "title": {"type": "string", "description": "Event title under 60 chars"},
-                            "date": {"type": "string", "description": "Target date YYYY-MM-DD"},
-                            "preferred_time": {"type": "string", "description": "Preferred time HH:MM (24h), optional"},
-                            "duration_minutes": {"type": "integer", "description": "Duration in minutes, default 60", "default": 60},
-                            "notes": {"type": "string", "description": "Optional event notes"}
-                        },
-                        "required": ["user_id", "title", "date"]
-                    }
-                }
-            }
-        ]
 
     async def chat(
         self, 
@@ -273,78 +152,82 @@ class UnifiedCoachingService:
                     }
                 )
             
-            logger.info(f"🚀 STARTING COACHING CHAT - User: {user_id}, Type: {response_type}, Message: '{message[:50]}{'...' if len(message) > 50 else ''}'")
-            
-            # Get user thread
-            thread_id = await self.thread_manager.get_or_create_user_thread(user_id)
-            
-            # Add user message to thread
-            await self.thread_manager.add_message_to_thread(thread_id, message, "user")
-            
+            logger.info(f"STARTING COACHING CHAT - User: {user_id}, Type: {response_type}, Message: '{message[:50]}{'...' if len(message) > 50 else ''}'")
+
+            # Get or create conversation
+            conversation_id = await self.conversation_mgr.get_or_create_conversation(user_id)
+
+            # Look up user's coach personality
+            personality_id = await self._get_user_personality(user_id)
+            system_prompt = get_personality_prompt(personality_id)
+
+            # Check if we should inject context
+            context_message = None
+            if await self.context_mgr.should_inject_context(user_id):
+                essential_ctx = await self.context_mgr.get_essential_context(user_id, "minimal")
+                context_message = self.context_mgr.format_for_assistant(essential_ctx)
+                await self.context_mgr._update_context_injection_time(user_id)
+
             # Store user message in database
             user_chat_id = await message_storage.store_user_message(
                 user_id=user_id,
                 content=message,
-                thread_id=thread_id,
+                conversation_id=conversation_id,
                 client_temp_id=client_temp_id
             )
-            
-            # Run assistant - don't pass instructions so Assistant uses its system prompt
-            result = await self.thread_manager.run_assistant(
-                thread_id=thread_id,
+
+            # Send message via Responses API (single synchronous call, no polling)
+            result = await self.conversation_mgr.send_message(
+                conversation_id=conversation_id,
                 user_id=user_id,
-                response_type=response_type.value
-                # No instructions - use Assistant's built-in personality
+                message=message,
+                system_prompt=system_prompt,
+                context_message=context_message,
             )
-            
+
             # Store assistant messages in database
             saved_ids: Dict[str, Optional[str]] = {}
             if user_chat_id:
                 saved_ids["user_message"] = user_chat_id
-            
-            # Track assistant temp IDs for client reconciliation
+
             assistant_temp_ids: List[str] = []
-            
-            # Get run_id from result for delta tracking
-            current_run_id = result.get("run_id")
-            
+            current_response_id = result.get("response_id")
+
             for idx, msg_content in enumerate(result["messages"]):
-                # Generate assistant_temp_id for each message (like client_temp_id for user messages)
-                assistant_temp_id = f"assistant_{current_run_id}_{idx}" if current_run_id else str(uuid.uuid4())
+                assistant_temp_id = f"assistant_{current_response_id}_{idx}" if current_response_id else str(uuid.uuid4())
                 assistant_temp_ids.append(assistant_temp_id)
-                
+
                 coach_msg_id = await message_storage.store_assistant_message(
                     user_id=user_id,
                     content=msg_content,
-                    thread_id=thread_id,
+                    conversation_id=conversation_id,
                     chat_id=user_chat_id,
-                    run_id=current_run_id,
+                    response_id=current_response_id,
                     assistant_temp_id=assistant_temp_id
                 )
                 saved_ids[f"coach_message_{idx}"] = coach_msg_id
-            
-            # Store assistant temp IDs for client reconciliation
+
             saved_ids["assistant_temp_ids"] = assistant_temp_ids
-            
-            # Filter out None values before returning
             saved_ids = {k: v for k, v in saved_ids.items() if v is not None}
-            
+
             # Increment message count
             increment_message_count(user_id)
-            
+
             # Get updated usage stats
             usage_stats = get_user_usage_stats(user_id)
-            
-            logger.info(f"✅ COACHING CHAT COMPLETE - Messages: {len(result['messages'])}, Type: {response_type}")
-            
+
+            logger.info(f"COACHING CHAT COMPLETE - Messages: {len(result['messages'])}, Type: {response_type}")
+
             return CoachingResponse(
                 messages=result["messages"],
                 personality_score=self._calculate_personality_score(response_type),
-                context_used=result.get("context_used", ["assistant_memory"]),
+                context_used=result.get("context_used", ["conversation_memory"]),
                 variation_applied=True,
                 response_type=response_type,
-                thread_id=thread_id,
-                run_id=current_run_id,  # Include run_id for delta tracking
+                conversation_id=conversation_id,
+                response_id=current_response_id,
+                thread_id=conversation_id,  # backwards compat
+                run_id=current_response_id,  # backwards compat
                 function_calls=result.get("function_calls", []),
                 usage_stats=usage_stats,
                 saved_ids=saved_ids,
@@ -420,10 +303,24 @@ class UnifiedCoachingService:
                 "recommendations": []
             }
     
+    async def _get_user_personality(self, user_id: str) -> str:
+        """Look up the user's selected coach personality from user_preferences."""
+        try:
+            supabase = get_supabase_client()
+            response = supabase.table("user_preferences").select(
+                "coach_personality"
+            ).eq("user_id", user_id).limit(1).execute()
+            if response.data and response.data[0].get("coach_personality"):
+                return response.data[0]["coach_personality"]
+            return "cora"
+        except Exception as e:
+            logger.error(f"Error getting user personality: {e}")
+            return "cora"
+
     async def update_user_memory(self, user_id: str, memory_type: str, title: str, content: str, importance: float = 0.5) -> bool:
         """Update user coaching memory"""
         try:
-            return await self.thread_manager.execute_function(
+            return await self.conversation_mgr.execute_function(
                 user_id=user_id,
                 function_name="store_user_memory",
                 arguments={
