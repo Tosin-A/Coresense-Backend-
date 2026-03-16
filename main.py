@@ -80,6 +80,7 @@ app.include_router(recap_router)
 
 
 @app.get("/health")
+@app.get("/api/v1/health")
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "service": "coresense-backend"}
