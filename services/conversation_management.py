@@ -333,13 +333,19 @@ class ConversationManagementService:
     # -------------------------------------------------------------------------
 
     def _extract_messages(self, response) -> List[str]:
-        """Extract text messages from a Responses API response."""
+        """Extract text messages from a Responses API response.
+
+        Splits each output text on double newlines so that separate
+        paragraphs appear as individual message bubbles in the chat UI.
+        """
         messages = []
         for item in response.output:
             if item.type == "message":
                 for content in item.content:
                     if content.type == "output_text":
-                        messages.append(content.text)
+                        # Split on double newlines to create separate bubbles
+                        segments = [s.strip() for s in content.text.split("\n\n") if s.strip()]
+                        messages.extend(segments if segments else [content.text])
         return messages if messages else ["I'm here. What's up?"]
 
     # -------------------------------------------------------------------------
