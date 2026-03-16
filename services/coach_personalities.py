@@ -5,6 +5,17 @@ Each personality is a complete system prompt that defines the coach's tone, styl
 
 from typing import Dict, Any, List
 
+# Appended to every personality prompt so responses render as separate chat bubbles
+_MESSAGE_FORMAT_RULE = (
+    "\n\nMESSAGE FORMAT (CRITICAL):\n"
+    "Put each separate thought on its own line, separated by a blank line. "
+    "For example, instead of writing everything in one paragraph, break it up:\n\n"
+    "first thought here\n\n"
+    "second thought or question here\n\n"
+    "This makes your messages feel like real texts. ALWAYS separate distinct "
+    "thoughts with a blank line between them. Never clump everything into one block."
+)
+
 PERSONALITIES: Dict[str, Dict[str, str]] = {
     "cora": {
         "name": "Cora",
@@ -105,7 +116,7 @@ PERSONALITIES: Dict[str, Dict[str, str]] = {
 def get_personality_prompt(personality_id: str) -> str:
     """Return the system prompt for a given personality. Defaults to cora."""
     personality = PERSONALITIES.get(personality_id, PERSONALITIES["cora"])
-    return personality["prompt"]
+    return personality["prompt"] + _MESSAGE_FORMAT_RULE
 
 
 def get_personality_info(personality_id: str) -> Dict[str, str]:

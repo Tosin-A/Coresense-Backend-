@@ -5,6 +5,7 @@ Uses OpenAI Responses API + Conversations API instead of deprecated Assistants A
 
 import json
 import logging
+import re
 import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -335,18 +336,47 @@ class ConversationManagementService:
     def _extract_messages(self, response) -> List[str]:
         """Extract text messages from a Responses API response.
 
-        Splits each output text on double newlines so that separate
-        paragraphs appear as individual message bubbles in the chat UI.
+        Splits each output text into separate segments so they appear
+        as individual message bubbles in the chat UI.
         """
         messages = []
         for item in response.output:
             if item.type == "message":
                 for content in item.content:
                     if content.type == "output_text":
-                        # Split on double newlines to create separate bubbles
-                        segments = [s.strip() for s in content.text.split("\n\n") if s.strip()]
-                        messages.extend(segments if segments else [content.text])
+                        segments = self._split_into_bubbles(content.text)
+                        messages.extend(segments)
         return messages if messages else ["I'm here. What's up?"]
+
+    @staticmethod
+    def _split_into_bubbles(text: str) -> List[str]:
+        """Split a single AI response into separate chat bubble segments.
+
+        Strategy:
+        1. Split on double newlines (paragraphs) first.
+        2. If that produces only one segment and it has multiple sentences,
+           split on sentence boundaries so each sentence is its own bubble.
+        """
+        # First try paragraph splits
+        segments = [s.strip() for s in text.split("\n\n") if s.strip()]
+
+        if len(segments) > 1:
+            return segments
+
+        # Single block — try splitting on sentence boundaries
+        full = text.strip()
+        if not full:
+            return [text]
+
+        # Split on sentence-ending punctuation followed by a space
+        # Handles: ". ", "! ", "? " while preserving the punctuation
+        parts = re.split(r'(?<=[.!?])\s+', full)
+        parts = [p.strip() for p in parts if p.strip()]
+
+        if len(parts) > 1:
+            return parts
+
+        return [full]
 
     # -------------------------------------------------------------------------
     # DB helpers
