@@ -1,162 +1,175 @@
 """
-Conversation Management Service - Responses API replacement for thread_management.py
-Uses OpenAI Responses API + Conversations API instead of deprecated Assistants API.
+Conversation Management Service - Groq-powered chat completions.
+
+Groq does NOT support OpenAI's Responses API or server-side Conversations API,
+so we manage conversation history ourselves:
+  - `conversation_id` is a UUID we generate, stored in `assistant_threads`.
+  - History is reconstructed from the `messages` table on each call.
+  - Tool calls follow the standard chat-completions tool-use loop.
 """
 
 import json
 import logging
 import re
+import uuid
 import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-from openai import OpenAI
+from groq import Groq
 
 from backend.database.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
+# Cap how many prior messages we replay into Groq each turn.
+MAX_HISTORY_MESSAGES = 20
+
 
 class ConversationManagementService:
     """
-    Conversation management using OpenAI Responses API.
+    Conversation management using Groq Chat Completions.
 
-    Key differences from the old ThreadManagementService:
-    - No polling. responses.create() returns synchronously.
-    - Function calling is handled in a simple loop (no submit_tool_outputs).
-    - Conversations API replaces threads for multi-turn context.
-    - System prompt is passed inline (no separate Assistant object).
+    Public surface mirrors the previous OpenAI Responses-based service so
+    coaching_service.py and downstream code keep working unchanged.
     """
 
     def __init__(self):
         from backend.config import get_settings
         settings = get_settings()
-        api_key = settings.openai_api_key
+        api_key = settings.groq_api_key
 
         if not api_key:
-            logger.warning("OpenAI API key not found")
+            logger.warning("Groq API key not found")
             self.client = None
         else:
-            self.client = OpenAI(api_key=api_key)
-            logger.info("OpenAI client initialized (Responses API)")
+            self.client = Groq(api_key=api_key)
+            logger.info("Groq client initialized (Chat Completions)")
 
-        self.model = settings.gpt_model or "gpt-4o-mini"
+        self.model = settings.groq_model or "llama-3.3-70b-versatile"
 
-        # Tool definitions in Responses API flat format
+        # OpenAI-compatible tool definitions (Groq uses the same schema).
         self.tools = [
             {
                 "type": "function",
-                "name": "get_user_memory",
-                "description": "Retrieve stored user coaching memories and preferences",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "user_id": {"type": "string"},
-                        "memory_types": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "default": ["preferences", "goals", "patterns"],
+                "function": {
+                    "name": "get_user_memory",
+                    "description": "Retrieve stored user coaching memories and preferences",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string"},
+                            "memory_types": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "default": ["preferences", "goals", "patterns"],
+                            },
                         },
+                        "required": ["user_id"],
                     },
-                    "required": ["user_id"],
                 },
             },
             {
                 "type": "function",
-                "name": "store_user_memory",
-                "description": "Store important coaching insights and user preferences",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "user_id": {"type": "string"},
-                        "memory_type": {"type": "string"},
-                        "title": {"type": "string"},
-                        "content": {"type": "string"},
-                        "importance": {"type": "number", "default": 0.5},
+                "function": {
+                    "name": "store_user_memory",
+                    "description": "Store important coaching insights and user preferences",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string"},
+                            "memory_type": {"type": "string"},
+                            "title": {"type": "string"},
+                            "content": {"type": "string"},
+                            "importance": {"type": "number", "default": 0.5},
+                        },
+                        "required": ["user_id", "memory_type", "title", "content"],
                     },
-                    "required": ["user_id", "memory_type", "title", "content"],
                 },
             },
             {
                 "type": "function",
-                "name": "analyze_conversation_pattern",
-                "description": "Analyze conversation for coaching insights",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "user_id": {"type": "string"},
-                        "recent_messages": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Recent conversation messages",
+                "function": {
+                    "name": "analyze_conversation_pattern",
+                    "description": "Analyze conversation for coaching insights",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string"},
+                            "recent_messages": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Recent conversation messages",
+                            },
+                            "analysis_type": {"type": "string"},
                         },
-                        "analysis_type": {"type": "string"},
+                        "required": ["user_id", "recent_messages"],
                     },
-                    "required": ["user_id", "recent_messages"],
                 },
             },
             {
                 "type": "function",
-                "name": "create_user_task",
-                "description": (
-                    "Create a task on the user's to-do list. Call this ONLY when the user makes "
-                    "a clear, specific commitment to do something actionable. Examples: 'I'll go to "
-                    "the gym tomorrow at 6am', 'I'm going to read for 30 minutes tonight', 'I need "
-                    "to finish my report by Friday'. Do NOT call this for vague intentions like "
-                    "'I should exercise more' or 'I want to be healthier'. The commitment must have "
-                    "a specific action."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "user_id": {
-                            "type": "string",
-                            "description": "The user's ID",
+                "function": {
+                    "name": "create_user_task",
+                    "description": (
+                        "Create a task on the user's to-do list. Call this ONLY when the user makes "
+                        "a clear, specific commitment to do something actionable. Examples: 'I'll go to "
+                        "the gym tomorrow at 6am', 'I'm going to read for 30 minutes tonight', 'I need "
+                        "to finish my report by Friday'. Do NOT call this for vague intentions like "
+                        "'I should exercise more' or 'I want to be healthier'. The commitment must have "
+                        "a specific action."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string", "description": "The user's ID"},
+                            "title": {
+                                "type": "string",
+                                "description": "Short, actionable task title under 60 characters",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Optional additional context about the task",
+                            },
+                            "priority": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high"],
+                                "description": "Task priority. Default to medium.",
+                            },
+                            "coach_reasoning": {
+                                "type": "string",
+                                "description": (
+                                    "Write in first person from the user's perspective "
+                                    "(e.g. \"I'm working on robotics at 4\", \"I'm going to the gym at 6am\"). "
+                                    "Keep it to one short sentence."
+                                ),
+                            },
                         },
-                        "title": {
-                            "type": "string",
-                            "description": "Short, actionable task title under 60 characters",
-                        },
-                        "description": {
-                            "type": "string",
-                            "description": "Optional additional context about the task",
-                        },
-                        "priority": {
-                            "type": "string",
-                            "enum": ["low", "medium", "high"],
-                            "description": "Task priority. Default to medium.",
-                        },
-                        "coach_reasoning": {
-                            "type": "string",
-                            "description": (
-                                "Write in first person from the user's perspective "
-                                "(e.g. \"I'm working on robotics at 4\", \"I'm going to the gym at 6am\"). "
-                                "Keep it to one short sentence."
-                            ),
-                        },
+                        "required": ["user_id", "title"],
                     },
-                    "required": ["user_id", "title"],
                 },
             },
             {
                 "type": "function",
-                "name": "schedule_calendar_event",
-                "description": (
-                    "Schedule an event in the user's calendar. Call this when the user commits "
-                    "to something time-specific, e.g. 'I'll go to the gym tomorrow', 'I need to "
-                    "attend a meeting on Friday at 3pm'. Do NOT call this for vague intentions."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "user_id": {"type": "string"},
-                        "title": {"type": "string", "description": "Event title under 60 chars"},
-                        "date": {"type": "string", "description": "Target date YYYY-MM-DD"},
-                        "preferred_time": {"type": "string", "description": "Preferred time HH:MM (24h), optional"},
-                        "duration_minutes": {"type": "integer", "description": "Duration in minutes, default 60", "default": 60},
-                        "notes": {"type": "string", "description": "Optional event notes"},
+                "function": {
+                    "name": "schedule_calendar_event",
+                    "description": (
+                        "Schedule an event in the user's calendar. Call this when the user commits "
+                        "to something time-specific, e.g. 'I'll go to the gym tomorrow', 'I need to "
+                        "attend a meeting on Friday at 3pm'. Do NOT call this for vague intentions."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "string"},
+                            "title": {"type": "string", "description": "Event title under 60 chars"},
+                            "date": {"type": "string", "description": "Target date YYYY-MM-DD"},
+                            "preferred_time": {"type": "string", "description": "Preferred time HH:MM (24h), optional"},
+                            "duration_minutes": {"type": "integer", "description": "Duration in minutes, default 60", "default": 60},
+                            "notes": {"type": "string", "description": "Optional event notes"},
+                        },
+                        "required": ["user_id", "title", "date"],
                     },
-                    "required": ["user_id", "title", "date"],
                 },
             },
         ]
@@ -166,18 +179,15 @@ class ConversationManagementService:
     # -------------------------------------------------------------------------
 
     async def get_or_create_conversation(self, user_id: str) -> str:
-        """
-        Get existing conversation_id or create a new one for the user.
-        Falls back to creating a fresh conversation if none exists.
-        """
+        """Get existing conversation_id or create a new one for the user."""
         try:
             existing = await self._get_user_conversation_id(user_id)
             if existing:
                 logger.info(f"Found existing conversation for user {user_id}: {existing}")
                 return existing
 
-            logger.info(f"Creating new conversation for user {user_id}")
-            conversation_id = await self._create_new_conversation(user_id)
+            conversation_id = f"conv_{uuid.uuid4().hex}"
+            logger.info(f"Creating new conversation for user {user_id}: {conversation_id}")
             await self._store_conversation_mapping(user_id, conversation_id)
             return conversation_id
 
@@ -193,49 +203,42 @@ class ConversationManagementService:
         system_prompt: str,
         context_message: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Send a user message and get the assistant response.
-        Single synchronous call — no polling needed.
-        """
+        """Send a user message and get the assistant response via Groq."""
         if not self.client:
-            raise Exception("OpenAI client not available")
+            return {
+                "messages": ["The coach isn't connected right now. Please try again later."],
+                "response_id": None,
+                "function_calls": [],
+                "context_used": ["no_client"],
+            }
 
         try:
-            input_messages = []
+            # Build the message list: system + history + (optional context) + new user msg.
+            messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
-            # Optionally prepend context
+            history = await self._load_history(user_id, conversation_id)
+            messages.extend(history)
+
             if context_message:
-                input_messages.append({"role": "user", "content": context_message})
+                messages.append({"role": "system", "content": context_message})
 
-            input_messages.append({"role": "user", "content": message})
+            messages.append({"role": "user", "content": message})
 
-            # Single synchronous call
-            response = await asyncio.to_thread(
-                self.client.responses.create,
-                model=self.model,
-                instructions=system_prompt,
-                input=input_messages,
-                tools=self.tools,
-                conversation={"id": conversation_id},
-                store=True,
-            )
+            executed_functions: List[Dict[str, Any]] = []
+            assistant_text = await self._run_with_tools(messages, user_id, executed_functions)
 
-            # Handle any function calls in a loop
-            executed_functions = []
-            response = await self._handle_tool_calls(response, user_id, executed_functions)
-
-            # Extract text messages from response
-            messages = self._extract_messages(response)
+            response_id = f"resp_{uuid.uuid4().hex}"
+            split_messages = self._split_into_bubbles(assistant_text) if assistant_text else ["I'm here. What's up?"]
 
             return {
-                "messages": messages,
-                "response_id": response.id,
+                "messages": split_messages,
+                "response_id": response_id,
                 "function_calls": executed_functions,
                 "context_used": ["conversation_memory"],
             }
 
         except Exception as e:
-            logger.error(f"Error sending message: {e}")
+            logger.error(f"Error sending message via Groq: {e}", exc_info=True)
             return {
                 "messages": ["I'm having trouble right now. Please try again."],
                 "response_id": None,
@@ -272,104 +275,123 @@ class ConversationManagementService:
             }
 
     # -------------------------------------------------------------------------
-    # Tool call loop
+    # Groq + tool-call loop
     # -------------------------------------------------------------------------
 
-    async def _handle_tool_calls(
-        self, response, user_id: str, executed_functions: List[Dict[str, Any]]
-    ):
-        """
-        Process function calls from the response in a loop.
-        Each iteration submits tool outputs and gets the next response.
-        """
-        if not self.client:
-            return response
+    async def _run_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        user_id: str,
+        executed_functions: List[Dict[str, Any]],
+    ) -> str:
+        """Run a chat completion, executing any tool calls in a loop."""
+        max_iterations = 5
 
-        max_iterations = 10
-        iteration = 0
+        for _ in range(max_iterations):
+            completion = await asyncio.to_thread(
+                self.client.chat.completions.create,
+                model=self.model,
+                messages=messages,
+                tools=self.tools,
+                tool_choice="auto",
+                temperature=0.7,
+                max_tokens=600,
+            )
 
-        while iteration < max_iterations:
-            fn_calls = [item for item in response.output if item.type == "function_call"]
-            if not fn_calls:
-                break
+            choice = completion.choices[0]
+            msg = choice.message
+            tool_calls = getattr(msg, "tool_calls", None)
 
-            iteration += 1
-            outputs = []
+            if not tool_calls:
+                return msg.content or ""
 
-            for call in fn_calls:
-                arguments = json.loads(call.arguments)
+            # Append the assistant message that requested tools, then satisfy each call.
+            messages.append({
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.function.name,
+                            "arguments": call.function.arguments,
+                        },
+                    }
+                    for call in tool_calls
+                ],
+            })
 
-                # Override user_id with the real one
+            for call in tool_calls:
+                try:
+                    arguments = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    arguments = {}
+
                 if "user_id" in arguments:
                     arguments["user_id"] = user_id
 
-                result = await self._dispatch_function(call.name, arguments)
-
+                result = await self._dispatch_function(call.function.name, arguments)
                 executed_functions.append({
-                    "name": call.name,
+                    "name": call.function.name,
                     "arguments": arguments,
                     "result": result,
                 })
 
-                outputs.append({
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": json.dumps(result),
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "name": call.function.name,
+                    "content": json.dumps(result),
                 })
 
-            # Continue the conversation with tool outputs
-            response = await asyncio.to_thread(
-                self.client.responses.create,
-                model=self.model,
-                input=outputs,
-                previous_response_id=response.id,
-                tools=self.tools,
-                store=True,
-            )
-
-        return response
+        # Hit iteration cap — return whatever the model last said.
+        return "I lost the thread there. What were you saying?"
 
     # -------------------------------------------------------------------------
-    # Message extraction
+    # History reconstruction
     # -------------------------------------------------------------------------
 
-    def _extract_messages(self, response) -> List[str]:
-        """Extract text messages from a Responses API response.
+    async def _load_history(self, user_id: str, conversation_id: str) -> List[Dict[str, str]]:
+        """Replay recent messages from Supabase as chat history."""
+        try:
+            supabase = get_supabase_client()
+            response = supabase.table("messages").select(
+                "content, sender_type, direction, created_at"
+            ).eq("userid", user_id).order(
+                "created_at", desc=True
+            ).limit(MAX_HISTORY_MESSAGES).execute()
 
-        Splits each output text into separate segments so they appear
-        as individual message bubbles in the chat UI.
-        """
-        messages = []
-        for item in response.output:
-            if item.type == "message":
-                for content in item.content:
-                    if content.type == "output_text":
-                        segments = self._split_into_bubbles(content.text)
-                        messages.extend(segments)
-        return messages if messages else ["I'm here. What's up?"]
+            rows = response.data or []
+            rows.reverse()  # chronological order
+
+            history: List[Dict[str, str]] = []
+            for row in rows:
+                content = (row.get("content") or "").strip()
+                if not content:
+                    continue
+                sender = (row.get("sender_type") or "").lower()
+                direction = (row.get("direction") or "").lower()
+                if sender == "user" or direction == "incoming":
+                    history.append({"role": "user", "content": content})
+                else:
+                    history.append({"role": "assistant", "content": content})
+            return history
+        except Exception as e:
+            logger.warning(f"Failed to load conversation history for {user_id}: {e}")
+            return []
 
     @staticmethod
     def _split_into_bubbles(text: str) -> List[str]:
-        """Split a single AI response into separate chat bubble segments.
-
-        Strategy:
-        1. Split on double newlines (paragraphs) first.
-        2. If that produces only one segment and it has multiple sentences,
-           split on sentence boundaries so each sentence is its own bubble.
-        """
-        # First try paragraph splits
+        """Split a single AI response into separate chat bubble segments."""
         segments = [s.strip() for s in text.split("\n\n") if s.strip()]
-
         if len(segments) > 1:
             return segments
 
-        # Single block — try splitting on sentence boundaries
         full = text.strip()
         if not full:
             return [text]
 
-        # Split on sentence-ending punctuation followed by a space
-        # Handles: ". ", "! ", "? " while preserving the punctuation
         parts = re.split(r'(?<=[.!?])\s+', full)
         parts = [p.strip() for p in parts if p.strip()]
 
@@ -388,7 +410,9 @@ class ConversationManagementService:
             supabase = get_supabase_client()
             response = supabase.table("assistant_threads").select(
                 "conversation_id, created_at"
-            ).eq("user_id", user_id).eq("status", "active").not_.is_("conversation_id", "null").execute()
+            ).eq("user_id", user_id).eq("status", "active").not_.is_(
+                "conversation_id", "null"
+            ).execute()
 
             if response.data:
                 row = sorted(response.data, key=lambda x: x["created_at"], reverse=True)[0]
@@ -398,30 +422,20 @@ class ConversationManagementService:
             logger.error(f"Error getting conversation_id for user {user_id}: {e}")
             return None
 
-    async def _create_new_conversation(self, user_id: str) -> str:
-        """Create a new OpenAI conversation via the Conversations API."""
-        if not self.client:
-            raise Exception("OpenAI client not available")
-
-        conversation = await asyncio.to_thread(self.client.conversations.create)
-        return conversation.id
-
     async def _store_conversation_mapping(self, user_id: str, conversation_id: str):
-        """Store user → conversation_id mapping in the assistant_threads table."""
+        """Store user -> conversation_id mapping in the assistant_threads table."""
         try:
             supabase = get_supabase_client()
 
-            # Deactivate any old rows for this user
             supabase.table("assistant_threads").update(
                 {"status": "inactive"}
             ).eq("user_id", user_id).eq("status", "active").execute()
 
-            # Insert new mapping
             supabase.table("assistant_threads").insert({
                 "user_id": user_id,
                 "conversation_id": conversation_id,
-                "openai_thread_id": conversation_id,  # backwards compat column
-                "assistant_id": "responses_api",  # placeholder for NOT NULL constraint
+                "openai_thread_id": conversation_id,  # legacy NOT NULL column
+                "assistant_id": "groq_chat",
                 "status": "active",
                 "created_at": datetime.now().isoformat(),
             }).execute()
@@ -432,11 +446,10 @@ class ConversationManagementService:
             raise
 
     # -------------------------------------------------------------------------
-    # Function implementations (unchanged from thread_management)
+    # Function implementations
     # -------------------------------------------------------------------------
 
     async def _dispatch_function(self, function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Route a function call to its implementation."""
         handlers = {
             "get_user_memory": self._execute_get_user_memory,
             "store_user_memory": self._execute_store_user_memory,

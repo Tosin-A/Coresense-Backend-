@@ -24,8 +24,8 @@ class MessageType(Enum):
 
 class ModelTier(Enum):
     """Model tiers for cost optimization"""
-    CHEAP = "cheap"      # gpt-4o-mini, gpt-3.5-turbo
-    PREMIUM = "premium"  # gpt-4, gpt-4-turbo
+    CHEAP = "cheap"      # llama-3.1-8b-instant
+    PREMIUM = "premium"  # llama-3.3-70b-versatile
 
 class ModelRouter:
     """
@@ -38,16 +38,16 @@ class ModelRouter:
         # Model configurations
         self.models = {
             ModelTier.CHEAP: {
-                "primary": "gpt-4o-mini",
-                "fallback": "gpt-3.5-turbo",
-                "cost_per_1k_tokens": 0.00015,  # Approximate
+                "primary": "llama-3.1-8b-instant",
+                "fallback": "llama-3.1-8b-instant",
+                "cost_per_1k_tokens": 0.00005,  # Groq pricing approx
                 "max_tokens": 150,
                 "temperature": 0.7
             },
             ModelTier.PREMIUM: {
-                "primary": "gpt-4",
-                "fallback": "gpt-4-turbo",
-                "cost_per_1k_tokens": 0.03,  # Approximate
+                "primary": "llama-3.3-70b-versatile",
+                "fallback": "llama-3.3-70b-versatile",
+                "cost_per_1k_tokens": 0.00079,  # Groq pricing approx
                 "max_tokens": 300,
                 "temperature": 0.8
             }

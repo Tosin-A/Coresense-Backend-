@@ -26,7 +26,7 @@ def check_dependencies():
         'fastapi',
         'uvicorn', 
         'supabase',
-        'openai'
+        'groq'
     ]
     
     missing_packages = []

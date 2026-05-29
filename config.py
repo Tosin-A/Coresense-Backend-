@@ -11,19 +11,24 @@ from pydantic import Field
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
-    
+
     # Supabase
     supabase_url: str
     supabase_service_key: str
-    
+
     # Server
     port: int = 8000
     environment: str = "production"
-    
-    # OpenAI
+
+    # Groq (primary LLM provider)
+    groq_api_key: Optional[str] = None
+    groq_model: Optional[str] = "llama-3.3-70b-versatile"
+
+    # OpenAI (legacy fields, kept so old .env files don't break)
     openai_api_key: Optional[str] = None
-    gpt_model: Optional[str] = "gpt-4o-mini"
-    
+    openai_assistant_id: Optional[str] = None
+    gpt_model: Optional[str] = None
+
     # Stripe
     stripe_secret_key: Optional[str] = None
     stripe_publishable_key: Optional[str] = None
@@ -32,12 +37,12 @@ class Settings(BaseSettings):
 
     # Apple App Store (In-App Purchase)
     apple_shared_secret: Optional[str] = None
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore"  # Ignore extra fields in .env
+        extra="ignore"
     )
 
 

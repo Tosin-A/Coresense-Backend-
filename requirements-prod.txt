@@ -26,8 +26,11 @@ aiohappyeyeballs==2.6.1
 aiosignal==1.4.0
 requests==2.32.5
 
-# OpenAI client
+# OpenAI client (kept for legacy paths; not used by chat flow)
 openai==2.14.0
+
+# Groq client (primary LLM provider)
+groq>=0.11.0
 
 # Authentication & Security
 PyJWT==2.10.1
