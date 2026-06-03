@@ -16,6 +16,7 @@ import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
+import groq
 from groq import Groq
 
 from backend.database.supabase_client import get_supabase_client
@@ -49,53 +50,34 @@ class ConversationManagementService:
         self.model = settings.groq_model or "llama-3.3-70b-versatile"
 
         # OpenAI-compatible tool definitions (Groq uses the same schema).
+        #
+        # IMPORTANT for Llama-on-Groq reliability:
+        #   - `user_id` is NEVER exposed to the model — the server injects it
+        #     from the authenticated session in `_run_with_tools`. Exposing it
+        #     made the model hallucinate values like "current_user" / "user123".
+        #   - We dropped `get_user_memory` and `store_user_memory` because the
+        #     `public.user_memories` table does not exist; calling them was
+        #     wasted tokens and frequently triggered Groq's `tool_use_failed`.
+        #   - JSON-schema `default` on nested types is omitted; some Groq
+        #     endpoints reject it. Defaults are described in `description`.
+        #   - Tool descriptions are tightened to discourage drive-by calls on
+        #     greetings / check-ins (where Llama tends to format tool calls
+        #     as inline text and trigger `tool_use_failed`).
         self.tools = [
             {
                 "type": "function",
                 "function": {
-                    "name": "get_user_memory",
-                    "description": "Retrieve stored user coaching memories and preferences",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "user_id": {"type": "string"},
-                            "memory_types": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "default": ["preferences", "goals", "patterns"],
-                            },
-                        },
-                        "required": ["user_id"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "store_user_memory",
-                    "description": "Store important coaching insights and user preferences",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "user_id": {"type": "string"},
-                            "memory_type": {"type": "string"},
-                            "title": {"type": "string"},
-                            "content": {"type": "string"},
-                            "importance": {"type": "number", "default": 0.5},
-                        },
-                        "required": ["user_id", "memory_type", "title", "content"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
                     "name": "analyze_conversation_pattern",
-                    "description": "Analyze conversation for coaching insights",
+                    "description": (
+                        "Analyze recent conversation for coaching pattern insights. "
+                        "Only call when the user EXPLICITLY asks for a pattern "
+                        "analysis, reflection, or summary of how they've been doing. "
+                        "Do NOT call on greetings, check-ins, vents, or normal "
+                        "conversational turns."
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "user_id": {"type": "string"},
                             "recent_messages": {
                                 "type": "array",
                                 "items": {"type": "string"},
@@ -103,7 +85,7 @@ class ConversationManagementService:
                             },
                             "analysis_type": {"type": "string"},
                         },
-                        "required": ["user_id", "recent_messages"],
+                        "required": ["recent_messages"],
                     },
                 },
             },
@@ -122,7 +104,6 @@ class ConversationManagementService:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "user_id": {"type": "string", "description": "The user's ID"},
                             "title": {
                                 "type": "string",
                                 "description": "Short, actionable task title under 60 characters",
@@ -145,7 +126,7 @@ class ConversationManagementService:
                                 ),
                             },
                         },
-                        "required": ["user_id", "title"],
+                        "required": ["title"],
                     },
                 },
             },
@@ -161,14 +142,13 @@ class ConversationManagementService:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "user_id": {"type": "string"},
                             "title": {"type": "string", "description": "Event title under 60 chars"},
                             "date": {"type": "string", "description": "Target date YYYY-MM-DD"},
                             "preferred_time": {"type": "string", "description": "Preferred time HH:MM (24h), optional"},
-                            "duration_minutes": {"type": "integer", "description": "Duration in minutes, default 60", "default": 60},
+                            "duration_minutes": {"type": "integer", "description": "Duration in minutes (default 60)"},
                             "notes": {"type": "string", "description": "Optional event notes"},
                         },
-                        "required": ["user_id", "title", "date"],
+                        "required": ["title", "date"],
                     },
                 },
             },
@@ -284,19 +264,53 @@ class ConversationManagementService:
         user_id: str,
         executed_functions: List[Dict[str, Any]],
     ) -> str:
-        """Run a chat completion, executing any tool calls in a loop."""
+        """Run a chat completion, executing any tool calls in a loop.
+
+        If Groq rejects our tool-call attempt with `tool_use_failed`
+        (Llama-3.3 sometimes emits tool calls as inline `<function=...>`
+        text instead of the structured `tool_calls` field), we retry
+        once WITHOUT tools so the user still gets a usable reply.
+        """
         max_iterations = 5
 
         for _ in range(max_iterations):
-            completion = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model=self.model,
-                messages=messages,
-                tools=self.tools,
-                tool_choice="auto",
-                temperature=0.7,
-                max_tokens=600,
-            )
+            try:
+                completion = await asyncio.to_thread(
+                    self.client.chat.completions.create,
+                    model=self.model,
+                    messages=messages,
+                    tools=self.tools,
+                    tool_choice="auto",
+                    parallel_tool_calls=False,
+                    temperature=0.7,
+                    max_tokens=600,
+                )
+            except groq.BadRequestError as e:
+                # Detect Groq's `tool_use_failed` — model wrote tool call as text.
+                err_code = None
+                try:
+                    body = getattr(e, "body", None) or {}
+                    if isinstance(body, dict):
+                        err_code = (body.get("error") or {}).get("code")
+                except Exception:
+                    err_code = None
+                if err_code is None:
+                    err_code = "tool_use_failed" if "tool_use_failed" in str(e) else None
+
+                if err_code == "tool_use_failed":
+                    logger.warning(
+                        "Groq tool_use_failed — retrying without tools so the "
+                        "user still gets a reply. Underlying error: %s", e,
+                    )
+                    fallback = await asyncio.to_thread(
+                        self.client.chat.completions.create,
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.7,
+                        max_tokens=600,
+                    )
+                    return fallback.choices[0].message.content or ""
+                raise
 
             choice = completion.choices[0]
             msg = choice.message
