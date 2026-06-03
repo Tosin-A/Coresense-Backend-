@@ -33,15 +33,20 @@ class MessageStorageService:
         Store user message in database.
 
         Returns:
-            The chat_id (UUID) for linking to assistant response
+            The row's primary key `id` (UUID). Same value is used as `chat_id`
+            so subsequent assistant messages can group under it.
         """
         try:
             supabase = get_supabase_client()
-            chat_id = str(uuid.uuid4())
+            # One UUID drives both the row PK and the grouping key. /history
+            # returns the PK as `msg.id`, and the frontend dedupes against
+            # the same value via `saved_ids.user_message` — they must match.
+            message_id = str(uuid.uuid4())
 
             cid = conversation_id or thread_id
             insert_data = {
-                "chat_id": chat_id,
+                "id": message_id,
+                "chat_id": message_id,
                 "userid": user_id,
                 "direction": "incoming",
                 "sender_type": "user",
@@ -58,7 +63,7 @@ class MessageStorageService:
             supabase.table("messages").insert(insert_data).execute()
 
             logger.info("Stored user message")
-            return chat_id
+            return message_id
 
         except Exception as e:
             logger.error(f"Error storing user message to Supabase: {e}")
